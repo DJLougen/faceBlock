@@ -29,6 +29,11 @@ const MIN_LANDMARKS = IDX_MOUTH_B + 1;
  * Lowering the floors recovers those poses. The cost is more spurious boxes on
  * non-faces, which the identity match then rejects — a cheap trade, since a
  * missed face is a silent failure while a spurious box costs one embedding.
+ *
+ * 0.2 is the measured floor. Dropping to 0.1 was tried and rejected: it did NOT
+ * recover the remaining near-90-degree side view, it grew a false face on a
+ * text document, and overall masking got worse. The extreme profile is a Face
+ * Landmarker limit, not something a threshold can be ground past.
  */
 const MIN_FACE_DETECTION_CONFIDENCE = 0.2;
 const MIN_FACE_PRESENCE_CONFIDENCE = 0.2;

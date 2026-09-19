@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FaceBlock pose test</title>
+<style>
+body{font:16px system-ui;max-width:1200px;margin:36px auto;padding:0 24px;background:#11151b;color:#edf1f5}
+h1{font-size:22px}p{color:#b9c4d0;line-height:1.5}
+.grid{display:flex;gap:22px;flex-wrap:wrap}
+figure{margin:0;width:290px}
+img{display:block;width:290px;height:290px;object-fit:cover;border-radius:8px;background:#000}
+figcaption{padding:9px 0;font-size:13px;color:#dfe6ee;line-height:1.35}
+.muted{color:#8c98a6;font-size:12px}
+</style></head>
+<body>
+  <h1>FaceBlock pose test — does a face looking away get blocked?</h1>
+  <p>Block someone, then load this page. The first three are real Wikimedia photos of the same
+     person in non-frontal poses. The last is an unblocked control and must stay visible.</p>
+  <div class="grid">
+      <figure>
+        <img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e9/Donald_Trump_profile.jpg/960px-Donald_Trump_profile.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail" alt="Donald Trump profile.jpg">
+        <figcaption>Donald Trump profile.jpg<br><span class="muted">Wikimedia Commons</span></figcaption>
+      </figure>
+      <figure>
+        <img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/c/cd/Trump_view_from_side%2C_December_2015.jpg/960px-Trump_view_from_side%2C_December_2015.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail" alt="Trump view from side, December 2015.jpg">
+        <figcaption>Trump view from side, December 2015.jpg<br><span class="muted">Wikimedia Commons</span></figcaption>
+      </figure>
+      <figure>
+        <img src="https://thumb.wikimedia.org/wikipedia/commons/thumb/9/93/Donald_Trump_haircut%2C_Laconia%2C_by_Michael_Vadon_July_16_2015_%28cropped%29.jpg/960px-Donald_Trump_haircut%2C_Laconia%2C_by_Michael_Vadon_July_16_2015_%28cropped%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail" alt="Donald Trump haircut, Laconia, by Michael Vadon July 16 2015 (cropped).jpg">
+        <figcaption>Donald Trump haircut, Laconia, by Michael Vadon July 16 2015 (cropped).jpg<br><span class="muted">Wikimedia Commons</span></figcaption>
+      </figure>
+      <figure>
+        <img src="/samples/unrelated.jpg" alt="control">
+        <figcaption>Unblocked control<br><span class="muted">must stay visible</span></figcaption>
+      </figure>
+  </div>
+</body></html>
