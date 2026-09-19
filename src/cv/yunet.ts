@@ -266,25 +266,37 @@ async function detectAtSize(
   return out;
 }
 
-/**
- * Input side for an image.
- *
- * Detection cost scales with the square of the input, so 320 costs 7 ms against
- * 24 ms at 640. But a smaller input also raises the smallest face the detector
- * can see (~10 px in the tensor): at 320 a face must occupy twice the fraction
- * of the frame it would at 640.
- *
- * So the choice is made by IMAGE size, in ONE pass. A small image cannot hide a
- * face tiny enough to need 640 — avatars and video frames are exactly this case
- * and get the cheap pass. A large photo may hide small or distant faces, so it
- * always gets full resolution. An earlier version ran 320 first and returned
- * early when it found anything, which silently skipped the small faces in any
- * large photo that also contained one close-up.
- */
-function inputSizeFor(srcW: number, srcH: number): number {
-  return Math.min(srcW, srcH) <= SMALL_IMAGE_SIDE ? FAST_INPUT_SIZE : FULL_INPUT_SIZE;
+/** Boxes overlapping more than this are the same face seen at two input sizes. */
+const MERGE_IOU = 0.4;
+
+function overlapIoU(a: FaceDetection, b: FaceDetection): number {
+  const x1 = Math.max(a.box.x, b.box.x);
+  const y1 = Math.max(a.box.y, b.box.y);
+  const x2 = Math.min(a.box.x + a.box.width, b.box.x + b.box.width);
+  const y2 = Math.min(a.box.y + a.box.height, b.box.y + b.box.height);
+  if (x2 <= x1 || y2 <= y1) return 0;
+  const inter = (x2 - x1) * (y2 - y1);
+  const union = a.box.width * a.box.height + b.box.width * b.box.height - inter;
+  return union > 0 ? inter / union : 0;
 }
 
+/**
+ * Detect faces at two input resolutions and take the union.
+ *
+ * The cheap pass is a quarter of the cost (7 ms against 24 ms) and is trusted
+ * only when it is safe to trust: the image is small enough that no face can be
+ * hidden, AND it found something. Otherwise the full-resolution pass runs as
+ * well and the results are merged.
+ *
+ * Both halves of that rule are load-bearing, each learned the hard way:
+ *
+ *  - Escalating when the cheap pass finds NOTHING is what recovers occluded
+ *    faces. Measured: sunglasses plus a face covering, on a 460 px image, gives
+ *    0 faces at 320 and 1 face at 0.747 at 640. Returning the empty 320 result
+ *    silently dropped the case the tool exists for.
+ *  - Running the full pass on LARGE images even when the cheap pass succeeded
+ *    is what keeps small and distant faces, which the cheap pass resamples away.
+ */
 export async function detectFacesYuNet(
   detector: YuNetDetector,
   image: HTMLImageElement,
@@ -297,5 +309,15 @@ export async function detectFacesYuNet(
   if (srcW === 0 || srcH === 0) {
     throw new Error("faceBlock: detectFacesYuNet received an image with no pixels");
   }
-  return detectAtSize(detector, image, inputSizeFor(srcW, srcH), scoreThreshold, nmsThreshold);
+
+  const fast = await detectAtSize(detector, image, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  const smallImage = Math.min(srcW, srcH) <= SMALL_IMAGE_SIDE;
+  if (fast.length > 0 && smallImage) return fast;
+
+  const full = await detectAtSize(detector, image, FULL_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  const merged = [...fast];
+  for (const face of full) {
+    if (!merged.some((m) => overlapIoU(m, face) > MERGE_IOU)) merged.push(face);
+  }
+  return merged;
 }
