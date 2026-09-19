@@ -1,0 +1,15 @@
+FaceBlock
+Copyright 2026 Daniel Lougen
+
+Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
+
+Required Notice: Copyright Daniel Lougen (https://github.com/DJLougen/faceBlock)
+
+Commercial use is not a permitted purpose under those terms. A separate
+commercial license is required for any commercial use. Contact:
+https://ko-fi.com/djlougen
+
+Third-party components bundled in this repository keep their own terms:
+  - MediaPipe Face Landmarker (face detection): Apache-2.0
+  - InsightFace w600k_mbf (face recognition weights): non-commercial research only
+See demo/public/models/provenance.json for sources and checksums.

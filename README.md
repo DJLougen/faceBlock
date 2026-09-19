@@ -179,6 +179,8 @@ Bundled third-party models are recorded, with their origins, in `demo/public/mod
 FaceBlock is **source-available, not open source**. It is released under the
 [PolyForm Noncommercial License 1.0.0](LICENSE).
 
+Copyright 2026 Daniel Lougen. See [NOTICE](NOTICE) for the required notice.
+
 **Free** for personal use, hobby projects, study, research, education, charities,
 public research and health organisations, and government institutions.
 
