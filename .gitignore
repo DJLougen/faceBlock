@@ -5,3 +5,6 @@ dist/
 dist-extension/
 faceBlock-*.zip
 plan*.md
+bench/
+provenance/
+autoresearch.sh

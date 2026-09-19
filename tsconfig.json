@@ -11,5 +11,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["bun", "chrome", "vite/client"]
   },
-  "include": ["src", "tests", "bench", "demo/*.ts", "extension", "scripts", "vite.config.ts"]
+  "include": ["src", "tests", "demo/*.ts", "extension", "scripts", "vite.config.ts"]
 }
