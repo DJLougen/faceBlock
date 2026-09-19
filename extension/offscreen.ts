@@ -364,6 +364,25 @@ function findPerson(people: ReferencePerson[], name: string): ReferencePerson | 
  * multiple faces are rejected — enrolling a face picked out of a group photo
  * would poison the identity.
  */
+/**
+ * Detect faces for ALIGNMENT, always through the same detector.
+ *
+ * Enrolment and matching must agree on landmark conventions. Aligning
+ * enrolments with MediaPipe's face-mesh midpoints while aligning queries with
+ * YuNet's keypoints produces differently-cropped 112x112 chips, which drops
+ * same-person similarity below the match threshold — measured as masks falling
+ * from 9 to 6 while detection rose. Every path therefore detects via YuNet; the
+ * landmarker is used ONLY when YuNet cannot load at all.
+ */
+async function detectForAlignment(img: HTMLImageElement): Promise<FaceDetection[]> {
+  try {
+    return await detectFacesYuNet(await getYuNet(), img);
+  } catch (e) {
+    console.warn("[faceblock] YuNet unavailable; falling back to the landmarker", e);
+    return detectFacesMultiScale(await getLandmarker(), img);
+  }
+}
+
 async function embedReference(
   refPath: string,
   landmarker: FaceLandmarker,
@@ -373,7 +392,7 @@ async function embedReference(
   const blob = await fetchImageBytes(url, `reference "${refPath}"`);
   const { img, release } = await decodeImage(blob, `reference "${refPath}"`);
   try {
-    const dets = detectFaces(landmarker, img);
+    const dets = await detectForAlignment(img);
     if (dets.length !== 1) {
       throw new Error(
         `faceBlock: reference "${refPath}" has ${dets.length} faces — ` +
@@ -469,7 +488,7 @@ async function embedCandidate(
         `${((w * h) / 1e6).toFixed(1)} MP — over the 12 MP limit`,
       );
     }
-    const dets = detectFaces(landmarker, img);
+    const dets = await detectForAlignment(img);
     if (dets.length !== 1) {
       throw new Error(`${dets.length} faces`);
     }
@@ -725,16 +744,8 @@ async function analyze(url: unknown, rawIdentities: unknown): Promise<{ result: 
     }
     // YuNet detects; the landmarker is kept only as a fallback so a model
     // failure degrades to the old behaviour instead of masking nothing.
-    let dets: FaceDetection[] = [];
-    try {
-      dets = await detectFacesYuNet(await getYuNet(), img);
-    } catch {
-      dets = [];
-    }
-    if (dets.length === 0) {
-      const landmarker = await getLandmarker();
-      dets = detectFacesMultiScale(landmarker, img);
-    }
+    // Same detector as enrolment, so alignment conventions match.
+    const dets = await detectForAlignment(img);
     const regions: ImageResult["regions"] = [];
     if (dets.length > 0 && identities.length > 0) {
       const raster = imageToRaster(img);
@@ -798,8 +809,7 @@ async function analyzeFrame(
         `faceBlock: video frame is ${w}x${h} (${((w * h) / 1e6).toFixed(1)} MP) — over the 12 MP limit`,
       );
     }
-    const landmarker = await getLandmarker();
-    const dets: FaceDetection[] = detectFaces(landmarker, img);
+    const dets: FaceDetection[] = await detectForAlignment(img);
     const regions: FrameResult["regions"] = [];
     if (dets.length > 0 && identities.length > 0) {
       const raster = imageToRaster(img);
