@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FaceBlock — local demo</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div>
+      <h1>FaceBlock <span class="tag">local demo</span></h1>
+      <p class="lede">
+        Block the person, not just the account. Enroll reference faces per identity, then test
+        an image — matching faces are covered with a black box. Everything runs in this tab.
+      </p>
+    </div>
+    <p id="model-status" class="status" role="status">
+      <span id="status-ind" class="ind ind-idle" aria-hidden="true"></span>
+      <span id="status-text">Starting…</span>
+    </p>
+  </header>
+
+  <div id="errors" class="errors" role="alert" hidden></div>
+
+  <main class="grid">
+    <section class="panel" aria-labelledby="ref-heading">
+      <h2 id="ref-heading">1 · Reference faces</h2>
+      <p class="hint">
+        Pick an identity (or type a new name), upload photos of that person, tick the face
+        crops that are actually them, then press <strong>Add selected faces</strong>.
+        Nothing is enrolled automatically.
+      </p>
+      <div class="row">
+        <label for="identity-select" class="fld-label">Identity</label>
+        <select id="identity-select" disabled></select>
+        <input id="identity-name" type="text" placeholder="Name, e.g. Theo Browne"
+               autocomplete="off" disabled />
+      </div>
+      <div class="row">
+        <input id="ref-input" class="visually-hidden" type="file"
+               accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple disabled />
+        <label for="ref-input" class="btn" id="ref-label">Choose reference images</label>
+        <button id="add-selected" class="btn primary" type="button" disabled>
+          Add selected faces (0)
+        </button>
+        <button id="clear-refs" class="btn danger" type="button" disabled>
+          Clear all
+        </button>
+      </div>
+      <p id="ref-note" class="note"></p>
+      <h3 class="sub">Pending images</h3>
+      <div id="candidate-list" class="cards"></div>
+      <h3 class="sub">Blocked identities</h3>
+      <div id="identity-list" class="identities"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="test-heading">
+      <h2 id="test-heading">2 · Test an image</h2>
+      <p class="hint">
+        Upload any image. Every detected face is aligned, embedded, and compared against all
+        enrolled identities — the same pipeline used for enrollment. Matched faces get a
+        black box; every face is logged with its score.
+      </p>
+      <div class="row">
+        <input id="test-input" class="visually-hidden" type="file"
+               accept="image/png,image/jpeg,image/webp,image/gif,image/avif" disabled />
+        <label for="test-input" class="btn" id="test-label">Choose test image</label>
+        <span id="busy-note" class="busy" hidden>Working…</span>
+      </div>
+
+      <div class="row slider-row">
+        <label for="threshold">Match threshold</label>
+        <input id="threshold" type="range" min="0.20" max="0.90" step="0.01" value="0.40" disabled />
+        <output id="threshold-value" for="threshold">0.40</output>
+      </div>
+      <p class="note">
+        Experimental, uncalibrated starting point — <em>not</em> the 0.73 default, which was
+        tuned on a synthetic benchmark, not real photos. Lower masks more eagerly (more false
+        positives); higher is stricter. A face is masked only when at least
+        <code>min(5, identity's reference count)</code> of its embeddings clear the threshold —
+        changing the slider re-evaluates instantly, no re-inference.
+      </p>
+
+      <div id="test-wrap" class="img-wrap" hidden>
+        <img id="test-image" alt="Uploaded test image" />
+      </div>
+      <p id="test-empty" class="empty">No test image yet — choose one above.</p>
+      <p id="test-stats" class="stats"></p>
+      <ol id="score-log" class="log"></ol>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <strong>Privacy:</strong> all detection, embedding, and matching run locally in this tab.
+      Images and embeddings never leave your device, are held in memory only, and are gone on
+      reload — the only fetches are the model files served with this page.
+    </p>
+    <p>
+      <strong>Research only:</strong> bundled detector and embedding weights are research/demo
+      models. Matching is approximate — always review the score log before trusting a mask.
+    </p>
+  </footer>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

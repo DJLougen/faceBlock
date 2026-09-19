@@ -5,10 +5,11 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["bun-types"]
+    "types": ["bun", "chrome", "vite/client"]
   },
-  "include": ["src", "tests", "bench"]
+  "include": ["src", "tests", "bench", "demo/*.ts", "extension", "scripts", "vite.config.ts"]
 }

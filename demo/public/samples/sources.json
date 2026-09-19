@@ -1,0 +1,39 @@
+{
+  "notice": "User-requested local evaluation only; no redistribution license asserted. Theo has two distinct enrollment photos; resized duplicate not counted. Control portrait is never enrolled.",
+  "images": {
+    "theo.jpg": {
+      "name": "Theo Browne",
+      "image": "https://avatars.githubusercontent.com/u/6751787?v=4",
+      "source": "https://github.com/t3dotgg",
+      "local": "/samples/theo.jpg",
+      "sha256": "93c1845ca433038099b31b3435a5b89eedb4ba98b31b61e1c5a60e431b5d94af",
+      "dimensions": [
+        460,
+        460
+      ]
+    },
+    "dwarkesh.jpg": {
+      "name": "Dwarkesh Patel",
+      "image": "https://substack-post-media.s3.amazonaws.com/public/images/b715ffd1-f7d7-4755-af88-c48efe647f5b_400x400.jpeg",
+      "source": "https://www.dwarkesh.com/about",
+      "local": "/samples/dwarkesh.jpg",
+      "sha256": "f76a607b86d0f9878c9088dffe8484084e604e1b27f897727ea88c1e3a3d2120",
+      "dimensions": [
+        400,
+        400
+      ]
+    },
+    "theo-user-02.jpg": {
+      "name": "Theo Browne (user-labeled)",
+      "source": "User supplied locally for FaceBlock reference enrollment",
+      "local": "/samples/theo-user-02.jpg",
+      "sha256": "1c6fd17100e8ddea40ee907a954f6021c9d9eedeb106c362dcaafbfa9b3ac005"
+    },
+    "unrelated.jpg": {
+      "name": "Public unrelated control portrait",
+      "source": "https://github.com/matplotlib/matplotlib/blob/main/lib/matplotlib/mpl-data/sample_data/grace_hopper.jpg",
+      "local": "/samples/unrelated.jpg",
+      "sha256": "a8ca6d734765703b09728ab47fe59f473d93ae3967fc24c7c0288c3c7adb7130"
+    }
+  }
+}

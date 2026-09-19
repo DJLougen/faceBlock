@@ -1,0 +1,20 @@
+{
+  "purpose": "Local non-commercial research demo; not a cleared commercial distribution",
+  "models": [
+    {
+      "file": "face_landmarker.task",
+      "bytes": 3758596,
+      "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+    },
+    {
+      "file": "w600k_mbf.onnx",
+      "bytes": 13616099,
+      "sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f"
+    }
+  ],
+  "sources": {
+    "face_landmarker.task": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+    "w600k_mbf.onnx": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip"
+  },
+  "insightface_weights_terms": "Non-commercial research only; source-code MIT does not license pretrained weights for commercial use."
+}

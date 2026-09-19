@@ -1,16 +1,27 @@
 /** Gallery matching: query embedding vs blocked identities. */
 
-import { DEFAULT_THRESHOLD, HARD_NEGATIVE_MARGIN } from "../shared/config.ts";
+import { DEFAULT_THRESHOLD, HARD_NEGATIVE_MARGIN, MIN_GALLERY_AGREEMENTS } from "../shared/config.ts";
 import type { BlockedIdentity, MatchResult } from "../shared/types.ts";
 import { cosineNormalized, l2Normalize } from "./cosine.ts";
 
-function maxCosine(q: Float32Array, gallery: readonly Float32Array[]): number {
-  let best = -Infinity;
+function topKCosines(
+  q: Float32Array,
+  gallery: readonly Float32Array[],
+  k: number,
+): Float64Array {
+  const top = new Float64Array(k);
+  top.fill(Number.NEGATIVE_INFINITY);
   for (const g of gallery) {
-    const s = cosineNormalized(q, l2Normalize(g));
-    if (s > best) best = s;
+    const s = cosineNormalized(q, g);
+    if (k === 0 || s <= top[k - 1]!) continue;
+    let i = k - 1;
+    while (i > 0 && s > top[i - 1]!) {
+      top[i] = top[i - 1]!;
+      i--;
+    }
+    top[i] = s;
   }
-  return best;
+  return top;
 }
 
 /**
@@ -20,7 +31,7 @@ function maxCosine(q: Float32Array, gallery: readonly Float32Array[]): number {
 export function matchFace(
   query: Float32Array,
   identities: readonly BlockedIdentity[],
-  opts?: { defaultThreshold?: number },
+  opts?: { defaultThreshold?: number; minAgreements?: number },
 ): MatchResult | null {
   if (identities.length === 0) return null;
   const q = l2Normalize(query);
@@ -31,16 +42,18 @@ export function matchFace(
         ? identity.prototypes
         : identity.embeddings;
     if (gallery.length === 0) continue;
-    const score = maxCosine(q, gallery);
+    const kNeed = Math.min(opts?.minAgreements ?? MIN_GALLERY_AGREEMENTS, gallery.length);
+    const top = topKCosines(q, gallery, kNeed);
+    const score = top[0]!;
     const negs = identity.hardNegatives;
     if (negs && negs.length > 0) {
-      const neg = maxCosine(q, negs);
+      const neg = topKCosines(q, negs, 1)[0]!;
       if (score - neg < HARD_NEGATIVE_MARGIN) continue;
     }
     const thresh = Number.isFinite(identity.threshold)
       ? identity.threshold
       : (opts?.defaultThreshold ?? DEFAULT_THRESHOLD);
-    if (score >= thresh && (best === null || score > best.score)) {
+    if (score >= thresh && top[kNeed - 1]! >= thresh && (best === null || score > best.score)) {
       best = { identityId: identity.id, score };
     }
   }

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FaceBlock</title>
+<link rel="stylesheet" href="options.css">
+<script src="options.js" type="module"></script>
+</head>
+<body>
+<main class="card">
+  <header class="top">
+    <div>
+      <h1>FaceBlock</h1>
+      <p class="tagline">Block the person, not just the account.</p>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="enabled-toggle">
+      <span id="enabled-label">Protection on</span>
+    </label>
+  </header>
+
+  <section class="block-form">
+    <h2>Block a person</h2>
+    <form id="block-form">
+      <input id="name-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Person's name, e.g. Theo Browne" maxlength="80">
+      <button id="block-btn" type="submit">Block</button>
+    </form>
+    <p id="progress" class="progress" hidden></p>
+    <p id="error" class="error" role="alert" hidden></p>
+  </section>
+
+  <section id="preview" class="preview" hidden></section>
+
+  <section>
+    <h2>Blocked people</h2>
+    <ul id="identity-list" class="identity-list"></ul>
+    <p id="empty-note" class="muted">Nobody is blocked yet.</p>
+  </section>
+
+  <section class="about">
+    <h2>How this works</h2>
+    <ul>
+      <li>Type any name. FaceBlock gathers public reference photos of that person
+          (from Wikipedia, Wikidata, and Wikimedia Commons), sends only the name
+          you typed, and keeps everything else on this device.</li>
+      <li>Matching runs entirely on this device. Images, face data, and your
+          browsing are never uploaded anywhere.</li>
+      <li>Before a new person is blocked, FaceBlock shows you the gathered faces
+          so you can confirm them — automatically collected photos can
+          occasionally include the wrong person.</li>
+      <li>This is a research preview. It scans ordinary webpage images only —
+          faces that are tiny, obscured, or inside videos/canvases can be missed.
+          It does not guarantee 100% blocking.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "theo-browne",
+    "name": "Theo Browne",
+    "aliases": [
+      "theo",
+      "theo browne",
+      "t3",
+      "t3dotgg",
+      "t3.gg"
+    ],
+    "references": [
+      {
+        "path": "samples/theo.jpg",
+        "source": "https://github.com/t3dotgg"
+      },
+      {
+        "path": "samples/theo-user-02.jpg",
+        "source": "User-supplied Theo reference; local-only"
+      }
+    ]
+  },
+  {
+    "id": "dwarkesh-patel",
+    "name": "Dwarkesh Patel",
+    "aliases": [
+      "dwarkesh",
+      "dwarkesh patel",
+      "dwarkesh_sp"
+    ],
+    "references": [
+      {
+        "path": "samples/dwarkesh.jpg",
+        "source": "https://www.dwarkesh.com/about"
+      }
+    ]
+  }
+]

@@ -23,6 +23,32 @@ describe("matchFace", () => {
     expect(result!.score).toBeCloseTo(1, 5);
   });
 
+  test("single-ref gallery still matches (k falls back to 1)", () => {
+    const emb = randomUnitVector(EMBED_DIM, mulberry32(21));
+    const result = matchFace(emb, [identity({ id: "alice", embeddings: [emb] })]);
+    expect(result).not.toBeNull();
+  });
+
+  test("one spike among two refs does not censor", () => {
+    const emb = randomUnitVector(EMBED_DIM, mulberry32(22));
+    const decoy = randomUnitVector(EMBED_DIM, mulberry32(23));
+    expect(cosineNormalized(emb, decoy)).toBeLessThan(DEFAULT_THRESHOLD);
+    const result = matchFace(emb, [
+      identity({ id: "alice", embeddings: [emb, decoy] }),
+    ]);
+    expect(result).toBeNull();
+  });
+
+  test("two agreeing refs still censor", () => {
+    const emb = randomUnitVector(EMBED_DIM, mulberry32(24));
+    const twin = new Float32Array(emb);
+    const result = matchFace(emb, [
+      identity({ id: "alice", embeddings: [emb, twin] }),
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.identityId).toBe("alice");
+  });
+
   test("unrelated unit vector below 0.7 does not match", () => {
     const emb = randomUnitVector(EMBED_DIM, mulberry32(2));
     const query = randomUnitVector(EMBED_DIM, mulberry32(3));
