@@ -61,7 +61,26 @@ function showError(text: string | null): void {
   errorBox.textContent = text ?? "";
 }
 
+/**
+ * Opened from the toolbar (`?popup=1`) versus the full options page.
+ * A popup is a small panel, so the tutorial and footer are hidden by CSS and
+ * the page is not meant to scroll for a screen and a half.
+ */
+const isPopup = new URLSearchParams(location.search).has("popup");
+if (isPopup) document.body.classList.add("compact");
+
+/**
+ * The three-step tutorial is for someone who has never used this. Once a person
+ * is blocked it has done its job, and leaving it under the list buried the
+ * thing the user actually came for.
+ */
+function updateTutorial(): void {
+  const intro = document.getElementById("getting-started");
+  if (intro) intro.hidden = state.identities.length > 0 || !previewSection.hidden;
+}
+
 function render(): void {
+  updateTutorial();
   toggle.checked = state.enabled;
   enabledLabel.textContent = state.enabled ? "Protection on" : "Protection off";
 
@@ -152,6 +171,7 @@ function endEnroll(): void {
 function clearPreview(): void {
   previewSection.hidden = true;
   previewSection.replaceChildren();
+  updateTutorial();
 }
 
 interface PreviewEntry {
@@ -257,6 +277,7 @@ function renderPreview(preview: EnrollPreview): void {
   actions.append(cancel);
 
   previewSection.replaceChildren(heading, subline);
+  updateTutorial();
 
   if (preview.kept.length === 0) {
     const guidance = document.createElement("p");

@@ -1,13 +1,39 @@
 {
   "manifest_version": 3,
-  "name": "FaceBlock — local research preview",
+  "name": "FaceBlock",
   "version": "0.1.0",
-  "description": "Remember blocked people and mask matching faces in ordinary webpage images. Local inference; experimental accuracy.",
-  "permissions": ["storage", "offscreen"],
-  "host_permissions": ["http://*/*", "https://*/*"],
-  "background": {"service_worker": "background.js", "type": "module"},
-  "action": {"default_title": "Manage FaceBlock", "default_popup": "options.html"},
+  "description": "Block a person, not just their account. Type a name once and matching faces are covered in images and videos on any site. Runs entirely on your device.",
+  "permissions": [
+    "storage",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Manage FaceBlock",
+    "default_popup": "options.html?popup=1"
+  },
   "options_page": "options.html",
-  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle", "all_frames": true}],
-  "content_security_policy": {"extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self';"}
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self';"
+  }
 }
