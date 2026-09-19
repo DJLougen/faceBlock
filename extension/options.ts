@@ -277,7 +277,6 @@ function renderPreview(preview: EnrollPreview): void {
   actions.append(cancel);
 
   previewSection.replaceChildren(heading, subline);
-  updateTutorial();
 
   if (preview.kept.length === 0) {
     const guidance = document.createElement("p");
@@ -317,6 +316,7 @@ function renderPreview(preview: EnrollPreview): void {
 
   previewSection.append(actions);
   previewSection.hidden = false;
+  updateTutorial(); // after unhiding: it reads previewSection.hidden
   progress.textContent = "Review the gathered faces, then confirm.";
 }
 
