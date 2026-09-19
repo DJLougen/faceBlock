@@ -52,37 +52,36 @@ Video works too. Coverage is designed to stay on a *moving* face without process
 
 ## Install
 
-Requires Chrome or any Chromium-based browser (Edge, Brave, Arc…). Budget around 130 MB of disk: the face models and runtimes are bundled so that nothing is downloaded at runtime.
+Takes about a minute. You need Chrome (or Edge, Brave, Arc — any Chromium browser).
 
-> **Not on the Chrome Web Store.** It installs as an unpacked extension, which needs Developer mode. Reading the code before running it is encouraged — that's rather the point.
+**1. Download this repo.** Green **Code** button above → **Download ZIP** → unzip it
+somewhere you'll remember.
 
-### Build from source
+> Prefer the command line? `git clone https://github.com/DJLougen/faceBlock.git`
+
+**2. Build it once.** You need [Bun](https://bun.sh) installed, then:
 
 ```bash
-git clone https://github.com/DJLougen/faceBlock.git
 cd faceBlock
 bun install
 bun run build:extension
 ```
 
-Output lands in `dist-extension/`.
+That creates a folder called `dist-extension`. (About 19 MB — the face model is small.)
 
-### Or use the packaged zip
+**3. Load it into Chrome.**
 
-```bash
-bun run package
-```
+1. Go to `chrome://extensions`
+2. Turn on **Developer mode** — the switch in the top-right corner
+3. Click **Load unpacked** and choose the `dist-extension` folder
+4. Pin FaceBlock to your toolbar (the puzzle-piece icon → pin)
 
-produces `faceBlock-<version>.zip` at the repo root, with `manifest.json` at the archive root. Extract it anywhere.
+**4. Done.** Click the FaceBlock icon and follow the three steps on the page.
 
-### Load it in your browser
-
-1. Open `chrome://extensions/`.
-2. Turn on **Developer mode** (top-right).
-3. Click **Load unpacked** and select the `dist-extension/` folder (or the extracted zip folder).
-4. Pin FaceBlock to the toolbar and click it to open the options page.
-
----
+> **Why "Developer mode"?** FaceBlock isn't in the Chrome Web Store yet, and that
+> switch is the only way Chrome allows an extension to be installed from a folder.
+> It doesn't make Chrome a developer tool, and it's the same process used by every
+> extension before it's published.
 
 ## Use it
 
@@ -135,6 +134,15 @@ The two cases the old detector returned *nothing* for are the interesting ones: 
 | --- | --- | --- |
 | 2400×2400 photo | 93 ms | **72 ms** |
 | 460×460 photo | 54 ms | **36 ms** |
+
+Download size, after removing an unused second detector and three unrelated ONNX
+Runtime builds that were being bundled:
+
+| | before | after |
+| --- | --- | --- |
+| packaged zip | 48.2 MB | **19.2 MB** |
+| unpacked extension | 133 MB | **31 MB** |
+| runtime dependencies | 3 | **1** (`onnxruntime-web`) |
 | detector pass, 320px input | — | **7 ms** |
 | detector pass, 640px input | 24 ms | 24 ms |
 

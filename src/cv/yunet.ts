@@ -28,8 +28,10 @@ import type { FaceDetection, Point } from "../shared/types.ts";
  * less canvas read-back, less pixel packing, and a smaller matmul.
  */
 const FAST_INPUT_SIZE = 320;
-/** Escalation input side, used when the fast pass finds nothing. */
+/** Full-resolution input side, used for images big enough to hide a small face. */
 const FULL_INPUT_SIZE = 640;
+/** Images with a smaller side at or below this use the cheap input. */
+const SMALL_IMAGE_SIDE = 800;
 /** Feature strides YuNet predicts at. */
 const STRIDES = [8, 16, 32] as const;
 /** Keypoints per face (10 floats: 5 x/y pairs). */
@@ -265,16 +267,24 @@ async function detectAtSize(
 }
 
 /**
- * Detect faces, cheaply first.
+ * Input side for an image.
  *
- * Detection cost scales with the square of the input side, and the fixed part
- * of that cost dominates on every image: a 640-wide pass measured ~54 ms on a
- * 460px photo, almost none of which scales with the photo. So the first pass
- * runs at 320 (a quarter of the pixels) and 640 is used ONLY when the cheap
- * pass finds nothing — a clear face fills enough of the frame to be found at
- * 320, while a small or distant face needs the full resolution to survive the
- * detector's ~10px floor.
+ * Detection cost scales with the square of the input, so 320 costs 7 ms against
+ * 24 ms at 640. But a smaller input also raises the smallest face the detector
+ * can see (~10 px in the tensor): at 320 a face must occupy twice the fraction
+ * of the frame it would at 640.
+ *
+ * So the choice is made by IMAGE size, in ONE pass. A small image cannot hide a
+ * face tiny enough to need 640 — avatars and video frames are exactly this case
+ * and get the cheap pass. A large photo may hide small or distant faces, so it
+ * always gets full resolution. An earlier version ran 320 first and returned
+ * early when it found anything, which silently skipped the small faces in any
+ * large photo that also contained one close-up.
  */
+function inputSizeFor(srcW: number, srcH: number): number {
+  return Math.min(srcW, srcH) <= SMALL_IMAGE_SIDE ? FAST_INPUT_SIZE : FULL_INPUT_SIZE;
+}
+
 export async function detectFacesYuNet(
   detector: YuNetDetector,
   image: HTMLImageElement,
@@ -282,10 +292,10 @@ export async function detectFacesYuNet(
 ): Promise<FaceDetection[]> {
   const scoreThreshold = opts.scoreThreshold ?? 0.5;
   const nmsThreshold = opts.nmsThreshold ?? 0.3;
-  if (image.naturalWidth === 0 || image.naturalHeight === 0) {
+  const srcW = image.naturalWidth;
+  const srcH = image.naturalHeight;
+  if (srcW === 0 || srcH === 0) {
     throw new Error("faceBlock: detectFacesYuNet received an image with no pixels");
   }
-  const fast = await detectAtSize(detector, image, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
-  if (fast.length > 0) return fast;
-  return detectAtSize(detector, image, FULL_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  return detectAtSize(detector, image, inputSizeFor(srcW, srcH), scoreThreshold, nmsThreshold);
 }

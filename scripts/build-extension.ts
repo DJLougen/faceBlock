@@ -20,7 +20,7 @@ for (const [entry, format] of [["background", "esm"], ["offscreen", "esm"], ["op
 for (const name of ["manifest.json", "references.json", "options.html", "options.css", "offscreen.html"]) {
   await cp(`extension/${name}`, `${out}/${name}`);
 }
-for (const folder of ["models", "ort", "mediapipe-wasm", "samples"]) {
+for (const folder of ["models", "ort", "samples"]) {
   await cp(`demo/public/${folder}`, `${out}/${folder}`, { recursive: true });
 }
 await writeFile(`${out}/build-info.json`, JSON.stringify({ builtAt: new Date().toISOString(), scope: "Local research preview. Still images only; not a calibrated identity benchmark." }, null, 2));

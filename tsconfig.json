@@ -9,7 +9,7 @@
     "noEmit": true,
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["bun", "chrome", "vite/client"]
+    "types": ["bun", "chrome"]
   },
-  "include": ["src", "tests", "demo/*.ts", "extension", "scripts", "vite.config.ts"]
+  "include": ["src", "tests", "extension", "scripts"]
 }

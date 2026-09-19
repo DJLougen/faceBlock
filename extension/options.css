@@ -297,3 +297,28 @@ button.secondary {
 button.secondary:hover {
   border-color: var(--accent);
 }
+
+/* Onboarding copy and footer: added for first-time users, appended so the
+   existing dark card styling above is untouched. */
+.steps { margin: 0; padding-left: 20px; line-height: 1.6; }
+.steps li { margin-bottom: 10px; }
+.steps strong { color: var(--text, #edf1f5); }
+.about li strong { color: var(--text, #edf1f5); }
+.foot {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  font-size: 13px;
+  color: var(--muted, #8c98a6);
+}
+.foot a { color: var(--accent, #8ecbff); }
+
+/* Sources disclosure: collapsed by default so the blocked list stays readable. */
+.sources { margin-top: 4px; }
+.sources summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted, #8c98a6);
+}
+.sources summary:hover { color: var(--accent, #8ecbff); }
+.sources span { display: block; font-size: 12px; word-break: break-all; margin: 3px 0 0 12px; }

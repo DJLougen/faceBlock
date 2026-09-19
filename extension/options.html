@@ -24,7 +24,7 @@
     <h2>Block a person</h2>
     <form id="block-form">
       <input id="name-input" type="text" autocomplete="off" spellcheck="false"
-             placeholder="Person's name, e.g. Theo Browne" maxlength="80">
+             placeholder="Type their name, e.g. Ada Lovelace" maxlength="80">
       <button id="block-btn" type="submit">Block</button>
     </form>
     <p id="progress" class="progress" hidden></p>
@@ -36,25 +36,43 @@
   <section>
     <h2>Blocked people</h2>
     <ul id="identity-list" class="identity-list"></ul>
-    <p id="empty-note" class="muted">Nobody is blocked yet.</p>
+    <p id="empty-note" class="muted">Nobody blocked yet — type a name above and press Block.</p>
   </section>
 
   <section class="about">
-    <h2>How this works</h2>
+    <h2>Getting started</h2>
+    <ol class="steps">
+      <li><strong>Type anyone's name</strong> and press <em>Block</em>. FaceBlock finds
+          public photos of them on its own — you don't need to upload anything.</li>
+      <li><strong>Check the faces it found</strong> and press <em>Confirm</em>. If one is
+          the wrong person, untick it first. Nothing is saved until you confirm.</li>
+      <li><strong>Keep browsing.</strong> Their face gets covered wherever it appears on
+          any website — in photos and in videos. Come back here to unblock someone,
+          or flip the switch above to pause everything.</li>
+    </ol>
+  </section>
+
+  <section class="about">
+    <h2>Good to know</h2>
     <ul>
-      <li>Type any name. FaceBlock gathers public reference photos of that person
-          (from Wikipedia, Wikidata, and Wikimedia Commons), sends only the name
-          you typed, and keeps everything else on this device.</li>
-      <li>Matching runs entirely on this device. Images, face data, and your
-          browsing are never uploaded anywhere.</li>
-      <li>Before a new person is blocked, FaceBlock shows you the gathered faces
-          so you can confirm them — automatically collected photos can
-          occasionally include the wrong person.</li>
-      <li>This is a research preview. It scans ordinary webpage images only —
-          faces that are tiny, obscured, or inside videos/canvases can be missed.
-          It does not guarantee 100% blocking.</li>
+      <li><strong>Nothing is uploaded.</strong> Only the name you type is sent out, to
+          look for public photos. Your browsing, the pages you visit, and the faces it
+          matches all stay on this device.</li>
+      <li><strong>No photos are kept.</strong> FaceBlock remembers the person, not the
+          pictures — just the numbers it needs to recognise them.</li>
+      <li><strong>It works best for public figures</strong> — people with photos on
+          Wikipedia or Wikimedia. If it can't find someone, it says so rather than
+          guessing. Blocking a private individual may not work.</li>
+      <li><strong>It isn't perfect yet.</strong> It can miss faces that are very small,
+          blurry, or turned almost fully sideways, and it can occasionally cover the
+          wrong person. This is an early release.</li>
     </ul>
   </section>
+
+  <footer class="foot">
+    <span>Free and open source. If it's useful, you can
+      <a href="https://ko-fi.com/djlougen" target="_blank" rel="noreferrer noopener">buy me a coffee</a>.</span>
+  </footer>
 </main>
 </body>
 </html>

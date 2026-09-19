@@ -80,16 +80,38 @@ function render(): void {
 
       const meta = document.createElement("span");
       meta.className = "muted";
-      meta.textContent = `${identity.embeddings.length} reference embedding${
-        identity.embeddings.length === 1 ? "" : "s"
-      } · added ${new Date(identity.createdAt).toLocaleDateString()}`;
+      // Plain language, not vocabulary from the implementation: a person using
+      // this wants to know it worked and when, not how many vectors there are.
+      const n = identity.embeddings.length;
+      meta.textContent = `Learned from ${n} photo${n === 1 ? "" : "s"} · added ${new Date(
+        identity.createdAt,
+      ).toLocaleDateString()}`;
       info.append(meta);
 
       if (identity.sources.length > 0) {
-        const sources = document.createElement("span");
-        sources.className = "muted sources";
-        sources.textContent = `Sources: ${identity.sources.join(", ")}`;
-        info.append(sources);
+        // Raw source URLs are set behind a collapsed disclosure. Printing them
+        // inline produced a wall of upload.wikimedia.org links that made a
+        // working install look broken.
+        const details = document.createElement("details");
+        details.className = "sources";
+        const summary = document.createElement("summary");
+        summary.textContent = `Where the photos came from (${identity.sources.length})`;
+        details.append(summary);
+        for (const src of identity.sources) {
+          const line = document.createElement("span");
+          line.className = "muted";
+          // Trim the API tracking parameters; they are noise to a reader.
+          let shown = src;
+          try {
+            const u = new URL(src);
+            shown = `${u.hostname}${u.pathname}`;
+          } catch {
+            /* keep the original string when it will not parse */
+          }
+          line.textContent = shown;
+          details.append(line);
+        }
+        info.append(details);
       }
 
       const remove = document.createElement("button");

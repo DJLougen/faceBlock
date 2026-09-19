@@ -18,7 +18,6 @@
  * minimal EnrollPreviewFace metadata survive, and only on confirm.
  */
 
-import { createFaceLandmarker, detectFaces, detectFacesMultiScale } from "../src/cv/detector.ts";
 import { createYuNetDetector, detectFacesYuNet, type YuNetDetector } from "../src/cv/yunet.ts";
 import { createEmbedder, embedAligned, type Embedder } from "../src/cv/embedder.ts";
 import { alignFace } from "../src/cv/align.ts";
@@ -31,7 +30,6 @@ import type { CandidateImage } from "../src/resolve/types.ts";
 import { BOX_SCALE_X, BOX_SCALE_Y, MIN_REFERENCE_IMAGES } from "../src/shared/config.ts";
 import type { BlockedIdentity, Box, FaceDetection } from "../src/shared/types.ts";
 import type { EnrollPreview, EnrollPreviewFace, FrameResult, ImageResult, ReferencePerson, SavedIdentity } from "./protocol.ts";
-import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 import * as ort from "onnxruntime-web/wasm";
 
 /**
@@ -99,22 +97,8 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 }
 
 /* ---------- lazy singleton models ---------- */
-let landmarkerPromise: Promise<FaceLandmarker> | null = null;
 let embedderPromise: Promise<Embedder> | null = null;
 let yunetPromise: Promise<YuNetDetector> | null = null;
-
-function getLandmarker(): Promise<FaceLandmarker> {
-  if (!landmarkerPromise) {
-    landmarkerPromise = createFaceLandmarker(
-      extUrl("mediapipe-wasm"),
-      extUrl("models/face_landmarker.task"),
-    ).catch((e) => {
-      landmarkerPromise = null; // allow retry on next request
-      throw e;
-    });
-  }
-  return landmarkerPromise;
-}
 
 /**
  * YuNet is the DETECTOR. It replaces the landmarker's detection role because
@@ -365,27 +349,20 @@ function findPerson(people: ReferencePerson[], name: string): ReferencePerson | 
  * would poison the identity.
  */
 /**
- * Detect faces for ALIGNMENT, always through the same detector.
+ * Detect faces for alignment.
  *
- * Enrolment and matching must agree on landmark conventions. Aligning
- * enrolments with MediaPipe's face-mesh midpoints while aligning queries with
- * YuNet's keypoints produces differently-cropped 112x112 chips, which drops
- * same-person similarity below the match threshold — measured as masks falling
- * from 9 to 6 while detection rose. Every path therefore detects via YuNet; the
- * landmarker is used ONLY when YuNet cannot load at all.
+ * ONE detector on every path, deliberately. Enrolment and matching must agree
+ * on landmark conventions: aligning enrolments with one model and queries with
+ * another produces differently-cropped 112x112 chips and drops same-person
+ * similarity below the match threshold (measured: masks fell from 9 to 6 while
+ * detection rose).
  */
 async function detectForAlignment(img: HTMLImageElement): Promise<FaceDetection[]> {
-  try {
-    return await detectFacesYuNet(await getYuNet(), img);
-  } catch (e) {
-    console.warn("[faceblock] YuNet unavailable; falling back to the landmarker", e);
-    return detectFacesMultiScale(await getLandmarker(), img);
-  }
+  return detectFacesYuNet(await getYuNet(), img);
 }
 
 async function embedReference(
   refPath: string,
-  landmarker: FaceLandmarker,
   embedder: Embedder,
 ): Promise<Float32Array> {
   const url = /^https?:\/\//i.test(refPath) ? refPath : extUrl(refPath);
@@ -426,7 +403,6 @@ async function enroll(name: unknown): Promise<{ identity: SavedIdentity }> {
         `To block someone else, add them to extension/references.json first.`,
     );
   }
-  const landmarker = await getLandmarker();
   const embedder = await getEmbedder();
   const embeddings: number[][] = [];
   const sources: string[] = [];
@@ -434,7 +410,7 @@ async function enroll(name: unknown): Promise<{ identity: SavedIdentity }> {
   for (const ref of person.references ?? []) {
     if (!ref || typeof ref.path !== "string") continue;
     try {
-      const emb = await embedReference(ref.path, landmarker, embedder);
+      const emb = await embedReference(ref.path, embedder);
       embeddings.push(Array.from(emb));
       if (typeof ref.source === "string") sources.push(ref.source);
     } catch (e) {
@@ -474,7 +450,6 @@ interface EmbeddedCandidate {
  */
 async function embedCandidate(
   candidate: CandidateImage,
-  landmarker: FaceLandmarker,
   embedder: Embedder,
 ): Promise<Float32Array> {
   const what = `candidate "${candidate.filename}"`;
@@ -533,7 +508,6 @@ async function resolvePreview(name: unknown): Promise<{ preview: EnrollPreview }
     };
   }
 
-  const landmarker = await getLandmarker();
   const embedder = await getEmbedder();
   const embedded: (EmbeddedCandidate | undefined)[] = [];
   let facesFound = 0;
@@ -544,7 +518,7 @@ async function resolvePreview(name: unknown): Promise<{ preview: EnrollPreview }
       if (i >= candidates.length) return;
       const candidate = candidates[i]!;
       try {
-        const embedding = await embedCandidate(candidate, landmarker, embedder);
+        const embedding = await embedCandidate(candidate, embedder);
         embedded[i] = { candidate, embedding };
         facesFound++;
       } catch (e) {
