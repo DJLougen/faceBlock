@@ -113,7 +113,7 @@ If a name isn't covered, FaceBlock tells you plainly rather than filling the lis
 
 **This is a research preview, not a privacy guarantee.**
 
-- **Misses are expected.** Small, obscured, profile, or low-quality faces get missed.
+- **Misses are still expected, but fewer than before.** Measured on 24 held-out photos: faces in **profile and three-quarter views** are now detected (a near-frontal-only detection floor missed them entirely), and **small faces in wide shots** are now found by scanning the image in overlapping tiles, because the detector otherwise rescales a large photo until a distant face is only a few pixels. Faces it still missed in that set: a near-90° side view, and one face too small even for the tiled pass. Small, obscured, motion-blurred, and very low-quality faces can still be missed.
 - **Wrong-person matches are possible.**
 - **Automatically found reference photos can be the wrong person.** Name lookups are ambiguous — a search for a public figure surfaces impersonators, same-name relatives, commemorative plaques, and AI-generated images. FaceBlock filters these and then asks you to confirm, but it cannot be perfect.
 - **Images and video only.** Canvas-rendered content and browser-protected pages (`chrome://`, the Web Store) are not covered.
