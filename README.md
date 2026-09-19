@@ -18,6 +18,12 @@ It also does not ask you to trust a server. There is no backend. Once installed,
 
 Real captures of the built extension running in Chrome. Reproduction steps are in [Reproducing these screenshots](#reproducing-these-screenshots).
 
+### 0. Working on X, in a normal browsing session
+
+![A post on X where the video's face and the poster's avatar are both covered by opaque black boxes while the rest of the timeline renders normally](docs/screenshots/05-x-timeline.png)
+
+This is the real target, in a real session: a post on X with the face inside the **video** masked, and the poster's **avatar** masked too. Nothing else on the page is touched. Every other screenshot below is a controlled fixture; this one is ordinary browsing.
+
 ### 1. Manage blocked people
 
 ![FaceBlock options page showing two blocked identities with their reference-embedding counts and sources](docs/screenshots/01-options.png)
@@ -109,6 +115,35 @@ If a name isn't covered, FaceBlock tells you plainly rather than filling the lis
 
 ---
 
+## Measured results
+
+Numbers below come from the harness in this repo, on 24 held-out photographs of one person that were **not** used for enrolment, plus timing runs against local fixtures. They are measurements, not marketing: the same protocol was applied before and after each change, and the regressions I hit are in the commit history.
+
+### Detection — 24 held-out photos
+
+| detector configuration | faces found | of those, masked (matched) |
+| --- | --- | --- |
+| MediaPipe landmarker, defaults | 6 | 5 |
+| MediaPipe landmarker, tuned floors + tiled pass | 11 | 8 |
+| **YuNet (current)** | **13** | 7 |
+
+The two cases the old detector returned *nothing* for are the interesting ones: a side-on profile, and faces in a wide shot. A crowd photo (an oath ceremony) went from **2 faces to 17**.
+
+### Speed
+
+| | before | after |
+| --- | --- | --- |
+| 2400×2400 photo | 93 ms | **72 ms** |
+| 460×460 photo | 54 ms | **36 ms** |
+| detector pass, 320px input | — | **7 ms** |
+| detector pass, 640px input | 24 ms | 24 ms |
+
+The detector was never the bottleneck. Rasterising a 2400×2400 photo pulled ~23 MB of pixels through `getImageData` to feed a 112×112 alignment chip — that was the cost.
+
+### Tests
+
+`bun test tests` — **121 passing**, including 9 that pin the detector's decode arithmetic and non-max suppression, which are easy to get subtly wrong and invisible once buried in a model call.
+
 ## Accuracy — read this before trusting it
 
 **This is a research preview, not a privacy guarantee.**
@@ -137,6 +172,7 @@ bun run dev          # fixture pages on http://127.0.0.1:5173
 
 | Screenshot | How to reproduce |
 | --- | --- |
+| `05-x-timeline.png` | Not a fixture — a frame from an ordinary browsing session on X with a person blocked, showing both a video face and an avatar masked. Reproduce it by blocking someone and scrolling your own timeline. |
 | `01-options.png` | Load `dist-extension`, open the options page, and block `Theo Browne` and `Dwarkesh Patel` (both ship in `extension/references.json`, so they enrol immediately). |
 | `02-confirm.png` | On the options page, type `Donald Trump` and press **Block**. Wait for it to finish gathering — it downloads roughly 48 photos and examines each — then screenshot the confirmation panel before confirming. |
 | `03-masked.png` | With both people above blocked, open `http://127.0.0.1:5173/extension-test.html`. Two faces are covered; the control stays visible. |
