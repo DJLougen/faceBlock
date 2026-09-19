@@ -22,8 +22,14 @@
 import * as ort from "onnxruntime-web/wasm";
 import type { FaceDetection, Point } from "../shared/types.ts";
 
-/** Fixed input side of the 2023mar export; the image is stretched to fit. */
-const INPUT_SIZE = 640;
+/**
+ * Input side used for the first, cheap pass. The 2026may export takes a
+ * dynamic input shape, so a small tensor costs a quarter of the pixels of 640:
+ * less canvas read-back, less pixel packing, and a smaller matmul.
+ */
+const FAST_INPUT_SIZE = 320;
+/** Escalation input side, used when the fast pass finds nothing. */
+const FULL_INPUT_SIZE = 640;
 /** Feature strides YuNet predicts at. */
 const STRIDES = [8, 16, 32] as const;
 /** Keypoints per face (10 floats: 5 x/y pairs). */
@@ -37,7 +43,7 @@ export interface YuNetPrior {
 }
 
 /** Cell grid each stride predicts over, for a given square input. */
-export function yunetPriors(inputSize = INPUT_SIZE, strides: readonly number[] = STRIDES): YuNetPrior[] {
+export function yunetPriors(inputSize = FULL_INPUT_SIZE, strides: readonly number[] = STRIDES): YuNetPrior[] {
   return strides.map((stride) => {
     const side = Math.floor(inputSize / stride);
     return { stride, cols: side, rows: side };
@@ -47,7 +53,8 @@ export function yunetPriors(inputSize = INPUT_SIZE, strides: readonly number[] =
 export interface YuNetDetector {
   session: ort.InferenceSession;
   inputName: string;
-  priors: YuNetPrior[];
+  /** Prior grids keyed by the input side they were generated for. */
+  priorsBySize: Map<number, YuNetPrior[]>;
   outputNames: Record<string, string>;
 }
 
@@ -78,7 +85,9 @@ export async function createYuNetDetector(
       if (actual) outputNames[wanted] = actual;
     }
   }
-  return { session, inputName, priors: yunetPriors(), outputNames };
+  const priorsBySize = new Map<number, YuNetPrior[]>();
+  for (const size of [FAST_INPUT_SIZE, FULL_INPUT_SIZE]) priorsBySize.set(size, yunetPriors(size));
+  return { session, inputName, priorsBySize, outputNames };
 }
 
 function iou(
@@ -169,30 +178,27 @@ export function decodeYuNet(
  * Detect faces in an image, returning boxes and ArcFace-ordered landmarks in
  * SOURCE-image pixel coordinates.
  */
-export async function detectFacesYuNet(
+/** Run one detection pass at a given input side, in source-image coordinates. */
+async function detectAtSize(
   detector: YuNetDetector,
   image: HTMLImageElement,
-  opts: { scoreThreshold?: number; nmsThreshold?: number } = {},
+  inputSize: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
 ): Promise<FaceDetection[]> {
-  const scoreThreshold = opts.scoreThreshold ?? 0.5;
-  const nmsThreshold = opts.nmsThreshold ?? 0.3;
   const srcW = image.naturalWidth;
   const srcH = image.naturalHeight;
-  if (srcW === 0 || srcH === 0) {
-    throw new Error("faceBlock: detectFacesYuNet received an image with no pixels");
-  }
-
   const canvas = document.createElement("canvas");
-  canvas.width = INPUT_SIZE;
-  canvas.height = INPUT_SIZE;
+  canvas.width = inputSize;
+  canvas.height = inputSize;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("faceBlock: 2d canvas unavailable for YuNet input");
   // The exported model expects a BGR tensor scaled 0..255; the image is
-  // stretched to the fixed input, then boxes are scaled back by the inverse.
-  ctx.drawImage(image, 0, 0, srcW, srcH, 0, 0, INPUT_SIZE, INPUT_SIZE);
-  const { data } = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
+  // stretched to the input, then boxes are scaled back by the inverse.
+  ctx.drawImage(image, 0, 0, srcW, srcH, 0, 0, inputSize, inputSize);
+  const { data } = ctx.getImageData(0, 0, inputSize, inputSize);
 
-  const plane = INPUT_SIZE * INPUT_SIZE;
+  const plane = inputSize * inputSize;
   const chw = new Float32Array(3 * plane);
   // BGR, not RGB. The canvas hands back RGB, but this detector was trained on
   // OpenCV's native BGR channel order, and feeding it RGB measurably weakens
@@ -206,7 +212,7 @@ export async function detectFacesYuNet(
   }
 
   const feeds: Record<string, ort.Tensor> = {
-    [detector.inputName]: new ort.Tensor("float32", chw, [1, 3, INPUT_SIZE, INPUT_SIZE]),
+    [detector.inputName]: new ort.Tensor("float32", chw, [1, 3, inputSize, inputSize]),
   };
   const results = await detector.session.run(feeds);
 
@@ -224,12 +230,12 @@ export async function detectFacesYuNet(
       bbox: STRIDES.map((s) => pick("bbox", s)),
       kps: STRIDES.map((s) => pick("kps", s)),
     },
-    detector.priors,
+    detector.priorsBySize.get(inputSize) ?? yunetPriors(inputSize),
     scoreThreshold,
   );
 
-  const sx = srcW / INPUT_SIZE;
-  const sy = srcH / INPUT_SIZE;
+  const sx = srcW / inputSize;
+  const sy = srcH / inputSize;
   const out: FaceDetection[] = [];
   for (const face of nms(raw, nmsThreshold)) {
     const scaled = face.kps.map((p) => ({ x: p.x * sx, y: p.y * sy }));
@@ -256,4 +262,30 @@ export async function detectFacesYuNet(
     });
   }
   return out;
+}
+
+/**
+ * Detect faces, cheaply first.
+ *
+ * Detection cost scales with the square of the input side, and the fixed part
+ * of that cost dominates on every image: a 640-wide pass measured ~54 ms on a
+ * 460px photo, almost none of which scales with the photo. So the first pass
+ * runs at 320 (a quarter of the pixels) and 640 is used ONLY when the cheap
+ * pass finds nothing — a clear face fills enough of the frame to be found at
+ * 320, while a small or distant face needs the full resolution to survive the
+ * detector's ~10px floor.
+ */
+export async function detectFacesYuNet(
+  detector: YuNetDetector,
+  image: HTMLImageElement,
+  opts: { scoreThreshold?: number; nmsThreshold?: number } = {},
+): Promise<FaceDetection[]> {
+  const scoreThreshold = opts.scoreThreshold ?? 0.5;
+  const nmsThreshold = opts.nmsThreshold ?? 0.3;
+  if (image.naturalWidth === 0 || image.naturalHeight === 0) {
+    throw new Error("faceBlock: detectFacesYuNet received an image with no pixels");
+  }
+  const fast = await detectAtSize(detector, image, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  if (fast.length > 0) return fast;
+  return detectAtSize(detector, image, FULL_INPUT_SIZE, scoreThreshold, nmsThreshold);
 }

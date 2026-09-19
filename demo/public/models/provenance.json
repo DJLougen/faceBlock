@@ -12,16 +12,18 @@
       "sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f"
     },
     {
-      "file": "face_detection_yunet_2023mar.onnx",
-      "bytes": 232589,
-      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+      "file": "face_detection_yunet_2026may.onnx",
+      "bytes": 229738,
+      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0"
     }
   ],
   "sources": {
     "face_landmarker.task": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
     "w600k_mbf.onnx": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip",
-    "face_detection_yunet_2023mar.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+    "face_detection_yunet_2023mar.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    "face_detection_yunet_2026may.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx"
   },
   "insightface_weights_terms": "Non-commercial research only; source-code MIT does not license pretrained weights for commercial use.",
-  "yunet_terms": "MIT License (c) 2020 Shiqi Yu; weights distributed in opencv_zoo under the same MIT terms. Commercially usable."
+  "yunet_terms": "MIT License (c) 2020 Shiqi Yu. Dynamic-input re-export of the 2023mar model; weights distributed in opencv_zoo under the same MIT terms.",
+  "models_note": "YuNet is the detector on every path. The MediaPipe landmarker is retained only as a fallback if YuNet cannot load."
 }

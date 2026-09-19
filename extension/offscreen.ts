@@ -22,7 +22,7 @@ import { createFaceLandmarker, detectFaces, detectFacesMultiScale } from "../src
 import { createYuNetDetector, detectFacesYuNet, type YuNetDetector } from "../src/cv/yunet.ts";
 import { createEmbedder, embedAligned, type Embedder } from "../src/cv/embedder.ts";
 import { alignFace } from "../src/cv/align.ts";
-import { imageToRaster } from "../src/cv/raster.ts";
+import { imageToRaster, imageToRasterRegion } from "../src/cv/raster.ts";
 import { matchFace } from "../src/matching/matcher.ts";
 import { cosineNormalized } from "../src/matching/cosine.ts";
 import { resolveCandidates } from "../src/resolve/resolve.ts";
@@ -129,7 +129,7 @@ function getLandmarker(): Promise<FaceLandmarker> {
 function getYuNet(): Promise<YuNetDetector> {
   if (!yunetPromise) {
     yunetPromise = createYuNetDetector(
-      extUrl("models/face_detection_yunet_2023mar.onnx"),
+      extUrl("models/face_detection_yunet_2026may.onnx"),
       extUrl("ort/"),
     ).catch((e) => {
       yunetPromise = null;
@@ -748,10 +748,16 @@ async function analyze(url: unknown, rawIdentities: unknown): Promise<{ result: 
     const dets = await detectForAlignment(img);
     const regions: ImageResult["regions"] = [];
     if (dets.length > 0 && identities.length > 0) {
-      const raster = imageToRaster(img);
       const embedder = await getEmbedder();
       for (const det of dets) {
-        const embedding = await embedAligned(embedder, alignFace(raster, det));
+        // Crop to the face: alignment needs a 112px chip, not a 23 MB bitmap.
+        const { raster, offsetX, offsetY } = imageToRasterRegion(img, det.box);
+        const local: FaceDetection = {
+          ...det,
+          box: { ...det.box, x: det.box.x - offsetX, y: det.box.y - offsetY },
+          landmarks: det.landmarks?.map((pt) => ({ x: pt.x - offsetX, y: pt.y - offsetY })),
+        };
+        const embedding = await embedAligned(embedder, alignFace(raster, local));
         const match = matchFace(embedding, identities, { minAgreements: 1 });
         if (match) {
           regions.push({
@@ -812,10 +818,16 @@ async function analyzeFrame(
     const dets: FaceDetection[] = await detectForAlignment(img);
     const regions: FrameResult["regions"] = [];
     if (dets.length > 0 && identities.length > 0) {
-      const raster = imageToRaster(img);
       const embedder = await getEmbedder();
       for (const det of dets) {
-        const embedding = await embedAligned(embedder, alignFace(raster, det));
+        // Crop to the face: alignment needs a 112px chip, not a 23 MB bitmap.
+        const { raster, offsetX, offsetY } = imageToRasterRegion(img, det.box);
+        const local: FaceDetection = {
+          ...det,
+          box: { ...det.box, x: det.box.x - offsetX, y: det.box.y - offsetY },
+          landmarks: det.landmarks?.map((pt) => ({ x: pt.x - offsetX, y: pt.y - offsetY })),
+        };
+        const embedding = await embedAligned(embedder, alignFace(raster, local));
         const match = matchFace(embedding, identities, { minAgreements: 1 });
         if (match) {
           regions.push({

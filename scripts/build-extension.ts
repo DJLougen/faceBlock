@@ -1,7 +1,10 @@
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const out = resolve("dist-extension");
+// Clear the output first: a stale model or bundle from a previous build would
+// otherwise ship silently alongside the current one.
+await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 for (const [entry, format] of [["background", "esm"], ["offscreen", "esm"], ["options", "esm"], ["content", "iife"]] as const) {
   const result = await Bun.build({

@@ -77,3 +77,39 @@ export async function sampleVideoFrame(
     return { ok: false, reason: "not-ready" };
   }
 }
+
+/**
+ * Rasterise only the neighbourhood of a box, not the whole image.
+ *
+ * Alignment reads a 112x112 chip derived from the five landmarks, so it needs
+ * nothing outside the face. Rasterising a 2400x2400 photo pulled ~23 MB of
+ * pixels through getImageData to feed a 112px crop — measurably ~40 ms of the
+ * per-image cost, and it scales with the photo rather than the face.
+ *
+ * Returns the raster plus the offset to subtract from any full-image
+ * coordinates before using them against it.
+ */
+export function imageToRasterRegion(
+  img: HTMLImageElement,
+  box: { x: number; y: number; width: number; height: number },
+  pad = 0.6,
+): { raster: Raster; offsetX: number; offsetY: number } {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  const padX = box.width * pad;
+  const padY = box.height * pad;
+  const x0 = Math.max(0, Math.floor(box.x - padX));
+  const y0 = Math.max(0, Math.floor(box.y - padY));
+  const x1 = Math.min(iw, Math.ceil(box.x + box.width + padX));
+  const y1 = Math.min(ih, Math.ceil(box.y + box.height + padY));
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("2d canvas unavailable");
+  ctx.drawImage(img, x0, y0, w, h, 0, 0, w, h);
+  const { data } = ctx.getImageData(0, 0, w, h);
+  return { raster: { width: w, height: h, data }, offsetX: x0, offsetY: y0 };
+}
