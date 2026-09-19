@@ -294,10 +294,42 @@ function overlapIoU(a: FaceDetection, b: FaceDetection): number {
   return union > 0 ? inter / union : 0;
 }
 
+/** Centre of a box, for the containment test below. */
+function centerOf(box: { x: number; y: number; width: number; height: number }): { x: number; y: number } {
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+function contains(
+  outer: { x: number; y: number; width: number; height: number },
+  p: { x: number; y: number },
+): boolean {
+  return p.x >= outer.x && p.x <= outer.x + outer.width && p.y >= outer.y && p.y <= outer.y + outer.height;
+}
+
+/**
+ * Add tiled detections, dropping those that are the same face as one already
+ * found.
+ *
+ * IoU alone missed duplicates: a tiled pass often boxes part of a face the
+ * whole-image pass already found, and if the two boxes sit off-centre the
+ * overlap can fall under the IoU bar. Measured on a crowd photo, two of four
+ * tiled additions turned out to be exactly that -- the same face, boxed twice,
+ * costing a second embedding for nothing.
+ *
+ * So a detection also counts as a duplicate when either box's centre falls
+ * inside the other. That is the relationship a sub-region box has to its parent
+ * regardless of IoU. Boxes at the frame edge are deliberately KEPT: a partially
+ * visible face at the border is still a face, and dropping it would be the
+ * expensive direction for this tool.
+ */
 function merge(existing: FaceDetection[], add: FaceDetection[]): FaceDetection[] {
   const out = [...existing];
   for (const face of add) {
-    if (!out.some((m) => overlapIoU(m, face) > MERGE_IOU)) out.push(face);
+    const duplicate = out.some((m) => {
+      if (overlapIoU(m, face) > MERGE_IOU) return true;
+      return contains(m.box, centerOf(face.box)) || contains(face.box, centerOf(m.box));
+    });
+    if (!duplicate) out.push(face);
   }
   return out;
 }
