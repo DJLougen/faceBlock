@@ -19,6 +19,21 @@ const IDX_MOUTH_B = 291;
 const MIN_LANDMARKS = IDX_MOUTH_B + 1;
 
 /**
+ * MediaPipe's default detection/presence floors (0.5) are tuned for frontal
+ * faces. A side-on face scores below them and produced NO detection at all, so
+ * nothing downstream could ever match it — turning "the person looked away"
+ * into "the person was not blocked". Measured on held-out photos: two outright
+ * profile shots yielded zero faces at the default, while every face that was
+ * detected scored 0.56-0.64 and matched comfortably.
+ *
+ * Lowering the floors recovers those poses. The cost is more spurious boxes on
+ * non-faces, which the identity match then rejects — a cheap trade, since a
+ * missed face is a silent failure while a spurious box costs one embedding.
+ */
+const MIN_FACE_DETECTION_CONFIDENCE = 0.2;
+const MIN_FACE_PRESENCE_CONFIDENCE = 0.2;
+
+/**
  * Create a FaceLandmarker, preferring the GPU delegate and falling back to
  * CPU when WebGL is unavailable or the GPU graph fails to build.
  * wasmDir must serve the MediaPipe vision WASM files locally
@@ -42,6 +57,8 @@ export async function createFaceLandmarker(
     baseOptions: { modelAssetPath: modelPath, delegate },
     runningMode: "IMAGE" as const,
     numFaces: 8,
+    minFaceDetectionConfidence: MIN_FACE_DETECTION_CONFIDENCE,
+    minFacePresenceConfidence: MIN_FACE_PRESENCE_CONFIDENCE,
     outputFaceBlendshapes: false,
     outputFacialTransformationMatrixes: false,
   });

@@ -12,28 +12,37 @@ export function imageToRaster(img: HTMLImageElement): Raster {
 }
 
 /**
+ * Result of sampling: a failure is either RECOVERABLE (the video simply was
+ * not ready yet — try again later) or PERMANENT (the canvas is tainted, so the
+ * pixels can never be read). Conflating the two permanently disables video
+ * whose very first sample happened to land too early.
+ */
+export type VideoFrameSample =
+  | { ok: true; jpeg: ArrayBuffer; width: number; height: number }
+  | { ok: false; reason: "not-ready" | "tainted" | "unsupported" };
+
+/**
  * Grab the current video frame as a downscaled JPEG for on-device analysis.
  *
- * Returns null — never throws — when the frame cannot be sampled: the video
- * has no drawable data yet (readyState < HAVE_CURRENT_DATA), has zero or
- * non-finite dimensions, or encoding fails. The most likely failure in the
- * wild is a cross-origin <video> without CORS: drawImage() then taints the
- * canvas and convertToBlob/toBlob throws SecurityError. The caller treats
- * that video as unanalysable. Sampling never seeks, pauses, or otherwise
- * disturbs playback.
+ * Never throws. Sampling never seeks, pauses, or otherwise disturbs playback.
+ *
+ * The most likely permanent failure in the wild is a cross-origin <video>
+ * without CORS: drawImage() taints the canvas and encoding then throws
+ * SecurityError. That is reported as "tainted" so the caller can stop trying.
+ * A video that merely has no drawable frame yet is "not-ready" — recoverable.
  *
  * The frame is drawn, encoded, and discarded — the canvas and pixels are
- * never retained or transmitted (plan §14).
+ * never retained or transmitted.
  */
 export async function sampleVideoFrame(
   video: HTMLVideoElement,
   maxWidth: number,
-): Promise<{ jpeg: ArrayBuffer; width: number; height: number } | null> {
-  if (video.readyState < 2) return null; // HAVE_CURRENT_DATA
+): Promise<VideoFrameSample> {
+  if (video.readyState < 2) return { ok: false, reason: "not-ready" }; // HAVE_CURRENT_DATA
   const srcW = video.videoWidth;
   const srcH = video.videoHeight;
   if (!Number.isFinite(srcW) || !Number.isFinite(srcH) || srcW <= 0 || srcH <= 0) {
-    return null;
+    return { ok: false, reason: "not-ready" };
   }
   // Downscale only — a small source is analysed at native size.
   const scale = Math.min(1, maxWidth / srcW);
@@ -43,24 +52,28 @@ export async function sampleVideoFrame(
     if (typeof OffscreenCanvas !== "undefined") {
       const canvas = new OffscreenCanvas(width, height);
       const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
+      if (!ctx) return { ok: false, reason: "unsupported" };
       ctx.drawImage(video, 0, 0, width, height);
       const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.7 });
-      return { jpeg: await blob.arrayBuffer(), width, height };
+      return { ok: true, jpeg: await blob.arrayBuffer(), width, height };
     }
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
+    if (!ctx) return { ok: false, reason: "unsupported" };
     ctx.drawImage(video, 0, 0, width, height);
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, "image/jpeg", 0.7),
     );
-    if (!blob) return null;
-    return { jpeg: await blob.arrayBuffer(), width, height };
-  } catch {
-    // SecurityError from a tainted (cross-origin) canvas lands here.
-    return null;
+    if (!blob) return { ok: false, reason: "unsupported" };
+    return { ok: true, jpeg: await blob.arrayBuffer(), width, height };
+  } catch (error) {
+    // SecurityError from a tainted (cross-origin) canvas lands here and is
+    // permanent; anything else is treated as recoverable.
+    if (error instanceof DOMException && error.name === "SecurityError") {
+      return { ok: false, reason: "tainted" };
+    }
+    return { ok: false, reason: "not-ready" };
   }
 }

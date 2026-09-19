@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FaceBlock video edge cases</title>
+<style>
+  body{font:16px system-ui;max-width:1100px;margin:36px auto;padding:0 24px;background:#11151b;color:#edf1f5}
+  figure{margin:0 0 18px}
+  video,img{display:block;width:340px;height:340px;object-fit:cover;border-radius:8px;background:#000}
+  figcaption{padding:8px 0;color:#b9c4d0}
+  h1{font-size:22px}
+</style>
+</head>
+<body>
+  <h1>FaceBlock video edge cases — <span id="case"></span></h1>
+  <p id="note"></p>
+  <div id="mount"></div>
+  <script type="module">
+    // Three real-world shapes that a naive `querySelectorAll('video')` misses
+    // or mishandles. Select with ?case=shadow | late | cross | plain.
+    const which = new URLSearchParams(location.search).get("case") ?? "plain";
+    document.querySelector("#case").textContent = which;
+
+    const SAME = "/video-theo.mp4";                 // same-origin, CORS-free not needed
+    const CROSS = "http://127.0.0.1:8899/video-theo.mp4"; // different port => cross-origin, no CORS
+
+    const notes = {
+      shadow: "Video lives inside an OPEN SHADOW ROOT. It must still be discovered and masked.",
+      late: "src is attached 6s after load. The first sample lands before it is ready — it must recover, not be disabled.",
+      cross: "Video is cross-origin WITHOUT CORS. The canvas is tainted, so it can never be read — must report once and stop.",
+      plain: "Control: an ordinary same-origin video, expected to be masked.",
+    };
+    document.querySelector("#note").textContent = notes[which] ?? "";
+
+    const mount = document.querySelector("#mount");
+    const fig = document.createElement("figure");
+    let video;
+
+    if (which === "shadow") {
+      const host = document.createElement("div");
+      mount.append(host);
+      const root = host.attachShadow({ mode: "open" });
+      video = document.createElement("video");
+      video.autoplay = true; video.muted = true; video.loop = true; video.playsInline = true;
+      video.src = SAME;
+      const cap = document.createElement("figcaption");
+      cap.textContent = "shadow-root video";
+      root.append(video, cap);
+    } else {
+      video = document.createElement("video");
+      video.autoplay = true; video.muted = true; video.loop = true; video.playsInline = true;
+      video.id = "v";
+      if (which === "late") {
+        setTimeout(() => { video.src = SAME; video.load(); }, 6000);
+      } else {
+        video.src = which === "cross" ? CROSS : SAME;
+      }
+      fig.append(video);
+      mount.append(fig);
+    }
+
+    // A visible control image so the image path is exercised on the same page.
+    const control = document.createElement("figure");
+    const img = document.createElement("img");
+    img.src = "/samples/unrelated.jpg";
+    const cap2 = document.createElement("figcaption");
+    cap2.textContent = "control image — must stay visible";
+    control.append(img, cap2);
+    mount.append(control);
+  </script>
+</body>
+</html>

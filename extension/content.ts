@@ -546,6 +546,13 @@ function scan(root: Node): void {
   if (root instanceof Element || root instanceof Document || root instanceof DocumentFragment) {
     for (const img of root.querySelectorAll<HTMLImageElement>("img")) track(img);
     for (const video of root.querySelectorAll<HTMLVideoElement>("video")) trackVideo(video);
+    // querySelectorAll does not cross shadow boundaries, and modern sites
+    // render their players inside open shadow roots. Walk into them, or those
+    // videos are simply never discovered.
+    for (const host of root.querySelectorAll<HTMLElement>("*")) {
+      const shadow = host.shadowRoot;
+      if (shadow) scan(shadow);
+    }
   }
 }
 
@@ -753,19 +760,30 @@ async function sampleVideo(v: Vtracked): Promise<void> {
   v.lastSampleMs = performance.now();
   const token = v.token;
   try {
-    const frame = await sampleVideoFrame(video, SAMPLE_MAX_WIDTH);
-    if (!frame) {
-      // A cross-origin video taints the canvas, so its pixels are unreadable.
-      // Record it once and stop: retrying every tick would burn CPU forever.
-      v.unanalyzable = true;
-      stats.videoUnanalyzable++;
+    const sample = await sampleVideoFrame(video, SAMPLE_MAX_WIDTH);
+    if (!sample.ok) {
+      if (sample.reason === "tainted") {
+        // The canvas is tainted, so this video's pixels can never be read.
+        // Stop sampling it — retrying every tick would burn CPU forever — and
+        // say so out loud, because a silent stop looks like a broken feature.
+        v.unanalyzable = true;
+        stats.videoUnanalyzable++;
+        console.warn(
+          "[faceblock] video not readable: this video is cross-origin and does not " +
+            "allow canvas access, so its frames cannot be analysed. Images on this " +
+            "page are unaffected.",
+          video.currentSrc || video.src,
+        );
+      }
+      // "not-ready" and "unsupported" are recoverable: leave the video tracked
+      // so a later tick (or a play/seek event) can sample it successfully.
       return;
     }
     stats.videoFramesSent++;
     const res = await send({
       target: "background",
       type: "ANALYZE_FRAME",
-      jpegBase64: toBase64(frame.jpeg),
+      jpegBase64: toBase64(sample.jpeg),
     });
     if (token !== v.token) return; // untracked or reset while in flight
     if (!res || res.ok !== true) {
