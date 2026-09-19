@@ -176,4 +176,35 @@ Bundled third-party models are recorded, with their origins, in `demo/public/mod
 
 ## License
 
-Research preview — not for production use. No licence is granted in this repository yet; treat as all rights reserved until one is added.
+FaceBlock is **source-available, not open source**. It is released under the
+[PolyForm Noncommercial License 1.0.0](LICENSE).
+
+**Free** for personal use, hobby projects, study, research, education, charities,
+public research and health organisations, and government institutions.
+
+**Not free for commercial use.** You may not sell FaceBlock, bundle it into a
+product you sell, or use it for any commercial purpose. If you want to do that,
+you need a commercial license — get in touch: [ko-fi.com/djlougen](https://ko-fi.com/djlougen).
+
+### ⚠️ Read this before commercial use
+
+The licence above covers **this repository's code**. It does not relicense the
+third-party model weights that ship in `demo/public/models/`:
+
+| Asset | Terms | Commercially usable? |
+| --- | --- | --- |
+| MediaPipe Face Landmarker (face detection) | Apache-2.0 | Yes |
+| InsightFace `w600k_mbf` (face recognition) | **Non-commercial research only** | **No** |
+
+So even a commercial licence from the author is not enough while that second
+model is bundled — the weights themselves forbid commercial use, and the model
+author's MIT-licensed *code* does not license their pretrained *weights*.
+
+Strip or replace `demo/public/models/w600k_mbf.onnx` with a commercially
+licensed face-recognition model before selling or deploying this commercially.
+Alternatives exist: OpenCV Zoo's SFace (`face_recognition_sface_2021dec.onnx`,
+13 MB) is Apache-2.0 licensed and offers a comparable 128-d embedding. Swapping
+it is a contained change — `src/cv/embedder.ts` is the only place the model is
+loaded.
+
+Full asset provenance and checksums: `demo/public/models/provenance.json`.
