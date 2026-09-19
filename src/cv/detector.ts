@@ -100,7 +100,20 @@ export function detectFaces(
         "wait for load/decode before calling",
     );
   }
-  const result = landmarker.detect(image);
+  return detectIn(landmarker, image, w, h);
+}
+
+/**
+ * Detect on any drawable whose pixel dimensions are supplied explicitly, so
+ * the same landmark math serves full images and cropped tiles.
+ */
+function detectIn(
+  landmarker: FaceLandmarker,
+  source: CanvasImageSource,
+  w: number,
+  h: number,
+): FaceDetection[] {
+  const result = landmarker.detect(source as unknown as HTMLImageElement);
   const out: FaceDetection[] = [];
   for (const lm of result.faceLandmarks) {
     if (lm.length < MIN_LANDMARKS) continue;
@@ -142,6 +155,97 @@ export function detectFaces(
     });
   }
   return out;
+}
+
+/** Fraction of the image's smaller side below which a face counts as small. */
+const SMALL_FACE_FRACTION = 0.06;
+/** Grid divisions per axis for the tiled rescue pass. */
+const TILE_GRID = 2;
+/** Fraction of each tile that overlaps its neighbour, so faces on seams survive. */
+const TILE_OVERLAP = 0.2;
+/** Boxes overlapping more than this are the same face seen twice. */
+const MERGE_IOU = 0.4;
+
+function detectionIoU(a: FaceDetection, b: FaceDetection): number {
+  const x1 = Math.max(a.box.x, b.box.x);
+  const y1 = Math.max(a.box.y, b.box.y);
+  const x2 = Math.min(a.box.x + a.box.width, b.box.x + b.box.width);
+  const y2 = Math.min(a.box.y + a.box.height, b.box.y + b.box.height);
+  if (x2 <= x1 || y2 <= y1) return 0;
+  const inter = (x2 - x1) * (y2 - y1);
+  const union = a.box.width * a.box.height + b.box.width * b.box.height - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/**
+ * Detect faces, falling back to overlapping tiles when the full-frame pass
+ * finds nothing useful.
+ *
+ * WHY THIS EXISTS: the landmarker rescales whatever it is given to a fixed
+ * internal resolution, so a face that occupies a small fraction of a large
+ * photo is resampled down to a handful of pixels and never detected — the
+ * classic "everyone in the group shot" failure. Cropping the image into
+ * overlapping tiles makes each face proportionally larger before the rescale,
+ * which recovers them. Boxes are mapped back to full-image coordinates and
+ * de-duplicated, so the caller sees one result per face.
+ *
+ * The full-frame pass runs first and short-circuits whenever it already found a
+ * healthy face, so the common case costs nothing extra.
+ */
+export function detectFacesMultiScale(
+  landmarker: FaceLandmarker,
+  image: HTMLImageElement,
+): FaceDetection[] {
+  const w = image.naturalWidth;
+  const h = image.naturalHeight;
+  const primary = detectFaces(landmarker, image);
+  const smallSide = Math.min(w, h);
+  const hasHealthyFace = primary.some(
+    (d) => Math.min(d.box.width, d.box.height) >= smallSide * SMALL_FACE_FRACTION,
+  );
+  if (hasHealthyFace) return primary;
+
+  const found = [...primary];
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return primary;
+
+  const tileW = Math.ceil(w / TILE_GRID);
+  const tileH = Math.ceil(h / TILE_GRID);
+  const stepX = Math.max(1, Math.round(tileW * (1 - TILE_OVERLAP)));
+  const stepY = Math.max(1, Math.round(tileH * (1 - TILE_OVERLAP)));
+
+  canvas.width = tileW;
+  canvas.height = tileH;
+
+  for (let oy = 0; oy < h; oy += stepY) {
+    for (let ox = 0; ox < w; ox += stepX) {
+      const cw = Math.min(tileW, w - ox);
+      const ch = Math.min(tileH, h - oy);
+      if (cw < 32 || ch < 32) continue;
+      // Reuse one canvas; a smaller final tile must not inherit stale pixels.
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw;
+        canvas.height = ch;
+      }
+      ctx.clearRect(0, 0, cw, ch);
+      ctx.drawImage(image, ox, oy, cw, ch, 0, 0, cw, ch);
+      for (const det of detectIn(landmarker, canvas, cw, ch)) {
+        const mapped: FaceDetection = {
+          box: {
+            x: det.box.x + ox,
+            y: det.box.y + oy,
+            width: det.box.width,
+            height: det.box.height,
+          },
+          confidence: det.confidence,
+          landmarks: det.landmarks?.map((p) => ({ x: p.x + ox, y: p.y + oy })),
+        };
+        if (!found.some((f) => detectionIoU(f, mapped) > MERGE_IOU)) found.push(mapped);
+      }
+    }
+  }
+  return found;
 }
 
 function pixel(p: { x: number; y: number }, w: number, h: number): Point {

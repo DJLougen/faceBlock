@@ -18,7 +18,7 @@
  * minimal EnrollPreviewFace metadata survive, and only on confirm.
  */
 
-import { createFaceLandmarker, detectFaces } from "../src/cv/detector.ts";
+import { createFaceLandmarker, detectFaces, detectFacesMultiScale } from "../src/cv/detector.ts";
 import { createEmbedder, embedAligned, type Embedder } from "../src/cv/embedder.ts";
 import { alignFace } from "../src/cv/align.ts";
 import { imageToRaster } from "../src/cv/raster.ts";
@@ -699,7 +699,10 @@ async function analyze(url: unknown, rawIdentities: unknown): Promise<{ result: 
       );
     }
     const landmarker = await getLandmarker();
-    const dets: FaceDetection[] = detectFaces(landmarker, img);
+    // Multi-scale: a face that occupies a small fraction of a large page image
+    // is otherwise rescaled to a few pixels and missed entirely. Video frames
+    // stay single-scale — the extra passes would cost too much per sample.
+    const dets: FaceDetection[] = detectFacesMultiScale(landmarker, img);
     const regions: ImageResult["regions"] = [];
     if (dets.length > 0 && identities.length > 0) {
       const raster = imageToRaster(img);
