@@ -159,6 +159,8 @@ function detectIn(
 
 /** Fraction of the image's smaller side below which a face counts as small. */
 const SMALL_FACE_FRACTION = 0.06;
+/** Smaller side above which a face can be rescaled away, so tiles are always run. */
+const TILE_TRIGGER_SMALL_SIDE = 1000;
 /** Grid divisions per axis for the tiled rescue pass. */
 const TILE_GRID = 2;
 /** Fraction of each tile that overlaps its neighbour, so faces on seams survive. */
@@ -203,7 +205,13 @@ export function detectFacesMultiScale(
   const hasHealthyFace = primary.some(
     (d) => Math.min(d.box.width, d.box.height) >= smallSide * SMALL_FACE_FRACTION,
   );
-  if (hasHealthyFace) return primary;
+  // A healthy face does NOT mean every face was found: a group shot with one
+  // close-up still hid its small faces, because the full-frame pass short-
+  // circuited. So tile whenever the image is big enough for a face to be
+  // rescaled away, and only skip tiling for small images that already found a
+  // healthy face. Bounded cost: the extra passes apply to large images only.
+  const canHideSmallFaces = smallSide >= TILE_TRIGGER_SMALL_SIDE;
+  if (hasHealthyFace && !canHideSmallFaces) return primary;
 
   const found = [...primary];
   const canvas = document.createElement("canvas");
