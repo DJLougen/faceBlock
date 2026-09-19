@@ -123,6 +123,33 @@ interface Tracked {
   evalTimer: number | undefined;
 }
 
+/**
+ * Results for URLs already analysed, so a re-render can be masked in the SAME
+ * task that inserts the node -- before the browser paints it.
+ *
+ * Without this, every image needed a round trip to the background and the
+ * offscreen document (tens to hundreds of milliseconds) before a mask could be
+ * drawn, and the code header admitted a matched face was briefly visible on
+ * first sight. On a timeline the same URL re-renders constantly while scrolling
+ * and navigating, so most sightings are repeats and can be blocked with no
+ * visible frame at all.
+ *
+ * Bounded like the background's cache: unbounded growth on a long session is a
+ * memory leak.
+ */
+const RESULT_CACHE_LIMIT = 500;
+const resultByUrl = new Map<string, ImageResult>();
+
+function rememberResult(url: string, result: ImageResult): void {
+  resultByUrl.delete(url);
+  resultByUrl.set(url, result);
+  while (resultByUrl.size > RESULT_CACHE_LIMIT) {
+    const oldest = resultByUrl.keys().next();
+    if (oldest.done) break;
+    resultByUrl.delete(oldest.value);
+  }
+}
+
 const tracked = new Map<HTMLImageElement, Tracked>();
 const queue: Tracked[] = [];
 let pumping = false;
@@ -474,6 +501,7 @@ async function pump(): Promise<void> {
       }
       const result = res.result as ImageResult | undefined;
       if (!result || !Array.isArray(result.regions)) continue;
+      rememberResult(url, result);
       t.source = { width: result.width, height: result.height };
       t.regions = result.regions;
       if (result.regions.length) {
@@ -499,6 +527,8 @@ async function pump(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 function track(img: HTMLImageElement): void {
+  // Fast path: an image we have already judged gets its mask now, in this task,
+  // so it is never shown unblocked. This runs before any queueing.
   if (tracked.has(img)) return;
   if (tracked.size >= MAX_TRACKED) {
     stats.overflow++;
@@ -519,6 +549,30 @@ function track(img: HTMLImageElement): void {
   tracked.set(img, t);
   io.observe(img);
   ro.observe(img);
+
+  // Synchronous fast path. `track` runs from the insertion observer, which is
+  // the same task that added the node -- the browser has not painted it yet. If
+  // this URL has already been judged, the mask is drawn now and the image is
+  // never shown unblocked. Marking it evaluated also stops the queue from
+  // spending a round trip to learn what we already know.
+  const known = img.currentSrc || img.src || "";
+  if (known) {
+    const cached = resultByUrl.get(known);
+    if (cached) {
+      t.evaluated = known;
+      t.source = { width: cached.width, height: cached.height };
+      t.regions = cached.regions;
+      if (cached.regions.length) {
+        stats.masked++;
+        try {
+          layoutMasks(t);
+        } catch {
+          stats.errors++;
+        }
+      }
+      return;
+    }
+  }
   maybeQueue(t);
 }
 
@@ -1061,6 +1115,8 @@ function onLoad(e: Event): void {
 
 function resetAll(): void {
   queue.length = 0;
+  // Cached judgements belong to the previous blocklist; drop them all.
+  resultByUrl.clear();
   for (const t of tracked.values()) {
     t.token++;
     if (t.evalTimer !== undefined) clearTimeout(t.evalTimer);
