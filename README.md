@@ -26,15 +26,15 @@ This is the real target, in a real session: a post on X with the face inside the
 
 ### 1. Manage blocked people
 
-![FaceBlock options page showing two blocked identities with their reference-embedding counts and sources](docs/screenshots/01-options.png)
+![The FaceBlock options page: a name field with a Block button, a blocked person listed as 'Learned from 7 photos' with a collapsed 'Where the photos came from' link, three numbered getting-started steps, and a Ko-fi link in the footer](docs/screenshots/01-options.png)
 
-After blocking two people. Each entry records *embeddings*, not photographs — note "2 reference embeddings" and the source URLs it learned from. **Remove** unblocks; the **Protection** toggle pauses all scanning.
+What you see after blocking someone. It says "Learned from 7 photos" rather than storing the photos themselves — only the numbers needed to recognise the person are kept, and the source list stays collapsed unless you want it. **Remove** unblocks; the **Protection** switch pauses everything.
 
 ### 2. Confirm the faces it found
 
-![FaceBlock confirmation panel showing eight gathered reference faces for Donald Trump, each with a source filename and confidence score](docs/screenshots/02-confirm.png)
+![The FaceBlock confirmation panel headed "Is this Ada Lovelace?", with eight small portrait tiles each carrying a checkbox, a collapsed "Why 27 other photos were skipped" link, and buttons reading "Yes, block Ada" and "Cancel"](docs/screenshots/02-confirm.png)
 
-Type a name and press **Block**. FaceBlock goes and finds reference photos of that person itself, then shows you what it intends to remember: here "checked 47 photos · 25 had a single face", narrowed to **8** faces that agree with each other across different angles and lighting. Each tile shows the source file name and a confidence score. Untick anything that looks wrong, then **Confirm**. Nothing is saved until you confirm.
+Type a name and press **Block**. FaceBlock goes and finds photos of that person itself, then asks **"Is this them?"** and shows what it intends to remember. Untick anything that is not them and press the confirm button. Nothing is saved until you do.
 
 ### 3. Blocked faces covered on an ordinary page
 

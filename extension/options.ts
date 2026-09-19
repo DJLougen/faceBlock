@@ -206,12 +206,17 @@ function buildFaceTile(face: EnrollPreviewFace): { tile: HTMLElement; entry: Pre
 
 function renderPreview(preview: EnrollPreview): void {
   const heading = document.createElement("h2");
-  heading.textContent = `Found ${preview.kept.length} reference faces for ${preview.name}`;
+  heading.textContent = `Is this ${preview.name}?`;
 
   const subline = document.createElement("p");
   subline.className = "muted";
+  // Say what happened in the reader's terms: how many photos were looked at,
+  // and that these are the clearest ones. "reference faces" and "had a single
+  // face" are implementation vocabulary.
+  const n = preview.kept.length;
   subline.textContent =
-    `checked ${preview.candidatesTried} photos · ${preview.facesFound} had a single face`;
+    `Found ${n} photo${n === 1 ? "" : "s"} of them out of ${preview.candidatesTried} looked at. ` +
+    `Untick any that aren't them, then press Confirm.`;
 
   const entries: PreviewEntry[] = [];
   const grid = document.createElement("div");
@@ -228,11 +233,11 @@ function renderPreview(preview: EnrollPreview): void {
   if (preview.kept.length > 0) {
     const confirm = document.createElement("button");
     confirm.type = "button";
-    confirm.textContent = "Confirm";
+    confirm.textContent = "Yes, block " + preview.name.split(" ")[0];
     confirm.addEventListener("click", () => {
       const faces = entries.filter((entry) => entry.checkbox.checked).map((entry) => entry.face);
       if (faces.length === 0) {
-        showError("Select at least one reference face, or cancel.");
+        showError("Keep at least one photo, or press Cancel.");
         return;
       }
       void confirmEnroll(preview.name, faces);
@@ -257,9 +262,9 @@ function renderPreview(preview: EnrollPreview): void {
     const guidance = document.createElement("p");
     guidance.className = "muted";
     guidance.textContent =
-      "No usable photos were found for this name. Try the person's full name or a " +
-      "more distinctive spelling — FaceBlock can only learn from public photos " +
-      "where it detects exactly one face.";
+      "No photos found for that name. Try their full name, or a different " +
+      "spelling. FaceBlock can only learn from public photos of someone — it " +
+      "works best for public figures, and won't guess.";
     previewSection.append(guidance);
   } else {
     previewSection.append(grid);
@@ -267,7 +272,7 @@ function renderPreview(preview: EnrollPreview): void {
       const warning = document.createElement("p");
       warning.className = "preview-warning";
       warning.textContent =
-        "Only a few reference faces were found — this set is thin and may miss faces.";
+        "Only a few photos were usable, so this may miss them sometimes. You can block them again later to pick up more.";
       previewSection.append(warning);
     }
   }
@@ -276,13 +281,13 @@ function renderPreview(preview: EnrollPreview): void {
     const details = document.createElement("details");
     details.className = "rejects";
     const summary = document.createElement("summary");
-    summary.textContent = `${preview.rejected.length} photo${
-      preview.rejected.length === 1 ? "" : "s"
-    } rejected`;
+    summary.textContent = `Why ${preview.rejected.length} other photo${
+      preview.rejected.length === 1 ? " was" : "s were"
+    } skipped`;
     const list = document.createElement("ul");
     for (const reject of preview.rejected) {
       const item = document.createElement("li");
-      item.textContent = `${reject.reason} — ${reject.url}`;
+      item.textContent = `${reject.reason}`;
       list.append(item);
     }
     details.append(summary, list);

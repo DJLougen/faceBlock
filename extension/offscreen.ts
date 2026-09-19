@@ -361,6 +361,7 @@ async function detectForAlignment(img: HTMLImageElement): Promise<FaceDetection[
   return detectFacesYuNet(await getYuNet(), img);
 }
 
+
 async function embedReference(
   refPath: string,
   embedder: Embedder,
