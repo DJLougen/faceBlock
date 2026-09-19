@@ -91,8 +91,8 @@ FaceBlock finds reference photos from public sources, so it works for **public f
 
 | Name | What happens |
 | --- | --- |
-| `Donald Trump` | 47 photos checked → 25 with a single face → 8 kept |
-| `Ada Lovelace` | 7 faces found → 2 kept (most depictions of her are paintings, which the detector often can't read) |
+| `Donald Trump` | 47 photos checked → 24 with a single face → 6 kept |
+| `Ada Lovelace` | 7 faces found → 2 kept (most depictions of her are paintings, which the detector still often can't read) |
 | `Theo Browne` | **0 candidates** — those sources have no photos of him, so FaceBlock says so instead of guessing |
 
 If a name isn't covered, FaceBlock tells you plainly rather than filling the list with unrelated faces. You can also enrol someone from your own reference photo.
@@ -113,7 +113,7 @@ If a name isn't covered, FaceBlock tells you plainly rather than filling the lis
 
 **This is a research preview, not a privacy guarantee.**
 
-- **Misses are still expected, but fewer than before.** Measured on 24 held-out photos: faces in **profile and three-quarter views** are now detected (a near-frontal-only detection floor missed them entirely), and **small faces in wide shots** are now found by scanning the image in overlapping tiles, because the detector otherwise rescales a large photo until a distant face is only a few pixels. Faces it still missed in that set: a near-90° side view, and one face too small even for the tiled pass. Small, obscured, motion-blurred, and very low-quality faces can still be missed.
+- **Misses are still expected.** Detection now uses YuNet, a purpose-built face detector for faces from roughly 10×10 to 300×300 px, rather than a landmark model tuned for frontal faces. On 24 held-out photographs it finds the profile and three-quarter views and the small faces in wide and crowd shots that the old detector returned *nothing* for — a crowd photo went from 2 faces found to 16. It still misses a near-90° side view, and very small, obscured, motion-blurred or low-quality faces. Wrong-person masks remain possible.
 - **Wrong-person matches are possible.**
 - **Automatically found reference photos can be the wrong person.** Name lookups are ambiguous — a search for a public figure surfaces impersonators, same-name relatives, commemorative plaques, and AI-generated images. FaceBlock filters these and then asks you to confirm, but it cannot be perfect.
 - **Images and video only.** Canvas-rendered content and browser-protected pages (`chrome://`, the Web Store) are not covered.
@@ -176,31 +176,32 @@ Bundled third-party models are recorded, with their origins, in `demo/public/mod
 
 ## License
 
-FaceBlock is **source-available, not open source**. It is released under the
-[PolyForm Noncommercial License 1.0.0](LICENSE).
+FaceBlock is **free and open-source software**, licensed under the
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
 
-Copyright 2026 Daniel Lougen. See [NOTICE](NOTICE) for the required notice.
+Copyright (C) 2026 Daniel Lougen. See [NOTICE](NOTICE) for the required notice.
 
-**Free** for personal use, hobby projects, study, research, education, charities,
-public research and health organisations, and government institutions.
+You can use, study, modify and share it freely. If you run a modified version as
+a network service, the AGPL asks you to publish your source too — that's the
+whole point of it, and it's what keeps a project like this from being quietly
+absorbed without giving anything back.
 
-**Not free for commercial use.** You may not sell FaceBlock, bundle it into a
-product you sell, or use it for any commercial purpose. If you want to do that,
-you need a commercial license — get in touch: [ko-fi.com/djlougen](https://ko-fi.com/djlougen).
+**No cost, no account, no telemetry.** If it's useful to you, you can support
+development here: [ko-fi.com/djlougen](https://ko-fi.com/djlougen).
 
-### ⚠️ Read this before commercial use
+### Third-party models
 
-The licence above covers **this repository's code**. It does not relicense the
-third-party model weights that ship in `demo/public/models/`:
+This project's licence does **not** relicense the model weights it bundles:
 
-| Asset | Terms | Commercially usable? |
+| Asset | Role | Terms |
 | --- | --- | --- |
-| MediaPipe Face Landmarker (face detection) | Apache-2.0 | Yes |
-| InsightFace `w600k_mbf` (face recognition) | **Non-commercial research only** | **No** |
+| `face_detection_yunet_2023mar.onnx` | face detection | **MIT** (© 2020 Shiqi Yu) |
+| `w600k_mbf.onnx` | face recognition | **Non-commercial research only** |
+| `face_landmarker.task` | detection fallback only | Apache-2.0 |
 
-So even a commercial licence from the author is not enough while that second
-model is bundled — the weights themselves forbid commercial use, and the model
-author's MIT-licensed *code* does not license their pretrained *weights*.
+The recognition weights are the one component whose terms are narrower than the
+project's. They are fine for personal, research and non-commercial use, which is
+what this project is for. If you ever need a build without that restriction, the
+drop-in replacement is OpenCV Zoo's SFace, which is Apache-2.0.
 
-A commercially sellable build therefore requires replacing that model. Asset
-provenance and checksums: `demo/public/models/provenance.json`.
+Provenance and checksums: `demo/public/models/provenance.json`.
