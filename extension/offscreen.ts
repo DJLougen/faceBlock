@@ -19,6 +19,7 @@
  */
 
 import { createFaceLandmarker, detectFaces, detectFacesMultiScale } from "../src/cv/detector.ts";
+import { createYuNetDetector, detectFacesYuNet, type YuNetDetector } from "../src/cv/yunet.ts";
 import { createEmbedder, embedAligned, type Embedder } from "../src/cv/embedder.ts";
 import { alignFace } from "../src/cv/align.ts";
 import { imageToRaster } from "../src/cv/raster.ts";
@@ -100,6 +101,7 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 /* ---------- lazy singleton models ---------- */
 let landmarkerPromise: Promise<FaceLandmarker> | null = null;
 let embedderPromise: Promise<Embedder> | null = null;
+let yunetPromise: Promise<YuNetDetector> | null = null;
 
 function getLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
@@ -112,6 +114,29 @@ function getLandmarker(): Promise<FaceLandmarker> {
     });
   }
   return landmarkerPromise;
+}
+
+/**
+ * YuNet is the DETECTOR. It replaces the landmarker's detection role because
+ * that model is tuned for near-frontal faces and returned nothing for profile
+ * views or faces that are small within a large photo — misses that happen
+ * before matching, so no similarity filtering can recover them.
+ *
+ * The landmarker is retained only as a fallback: if YuNet fails to load or
+ * finds nothing, detection still works rather than silently disabling the
+ * extension.
+ */
+function getYuNet(): Promise<YuNetDetector> {
+  if (!yunetPromise) {
+    yunetPromise = createYuNetDetector(
+      extUrl("models/face_detection_yunet_2023mar.onnx"),
+      extUrl("ort/"),
+    ).catch((e) => {
+      yunetPromise = null;
+      throw e;
+    });
+  }
+  return yunetPromise;
 }
 
 function getEmbedder(): Promise<Embedder> {
@@ -698,11 +723,18 @@ async function analyze(url: unknown, rawIdentities: unknown): Promise<{ result: 
         `faceBlock: image is ${w}x${h} (${((w * h) / 1e6).toFixed(1)} MP) — over the 12 MP limit`,
       );
     }
-    const landmarker = await getLandmarker();
-    // Multi-scale: a face that occupies a small fraction of a large page image
-    // is otherwise rescaled to a few pixels and missed entirely. Video frames
-    // stay single-scale — the extra passes would cost too much per sample.
-    const dets: FaceDetection[] = detectFacesMultiScale(landmarker, img);
+    // YuNet detects; the landmarker is kept only as a fallback so a model
+    // failure degrades to the old behaviour instead of masking nothing.
+    let dets: FaceDetection[] = [];
+    try {
+      dets = await detectFacesYuNet(await getYuNet(), img);
+    } catch {
+      dets = [];
+    }
+    if (dets.length === 0) {
+      const landmarker = await getLandmarker();
+      dets = detectFacesMultiScale(landmarker, img);
+    }
     const regions: ImageResult["regions"] = [];
     if (dets.length > 0 && identities.length > 0) {
       const raster = imageToRaster(img);
