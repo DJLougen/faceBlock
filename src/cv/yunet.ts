@@ -30,8 +30,6 @@ import type { FaceDetection, Point } from "../shared/types.ts";
 const FAST_INPUT_SIZE = 320;
 /** Full-resolution input side, used for images big enough to hide a small face. */
 const FULL_INPUT_SIZE = 640;
-/** Images with a smaller side at or below this use the cheap input. */
-const SMALL_IMAGE_SIDE = 800;
 /** Feature strides YuNet predicts at. */
 const STRIDES = [8, 16, 32] as const;
 /** Keypoints per face (10 floats: 5 x/y pairs). */
@@ -238,36 +236,52 @@ async function detectAtSize(
 
   const sx = srcW / inputSize;
   const sy = srcH / inputSize;
-  const out: FaceDetection[] = [];
-  for (const face of nms(raw, nmsThreshold)) {
-    const scaled = face.kps.map((p) => ({ x: p.x * sx, y: p.y * sy }));
-    // YuNet reports (right eye, left eye, nose, right mouth, left mouth).
-    // Sort the eyes and mouth corners by x so the order matches CANONICAL_5,
-    // exactly as the landmarker path does.
-    const eyeA = scaled[0]!;
-    const eyeB = scaled[1]!;
-    const nose = scaled[2]!;
-    const mouthA = scaled[3]!;
-    const mouthB = scaled[4]!;
-    const [leftEye, rightEye] = eyeA.x <= eyeB.x ? [eyeA, eyeB] : [eyeB, eyeA];
-    const [leftMouth, rightMouth] = mouthA.x <= mouthB.x ? [mouthA, mouthB] : [mouthB, mouthA];
-    out.push({
-      box: {
-        x: face.box.x * sx,
-        y: face.box.y * sy,
-        width: face.box.width * sx,
-        height: face.box.height * sy,
-      },
-      // A real detector score here, unlike the landmarker path's placeholder.
-      confidence: face.score,
-      landmarks: [leftEye, rightEye, nose, leftMouth, rightMouth],
-    });
-  }
-  return out;
+  return nms(raw, nmsThreshold).map((face) => toFaceDetection(face, sx, sy, 0, 0));
 }
 
-/** Boxes overlapping more than this are the same face seen at two input sizes. */
+/**
+ * Map a raw detection from input-tensor space into image pixels.
+ *
+ * YuNet reports its five keypoints as (right eye, left eye, nose, right mouth,
+ * left mouth). The eyes and mouth corners are sorted by x so the order matches
+ * CANONICAL_5, which is what the ArcFace alignment expects. YuNet's keypoints
+ * are learned, so unlike the landmarker this covers profile and occluded faces.
+ */
+function toFaceDetection(
+  face: { box: { x: number; y: number; width: number; height: number }; score: number; kps: Point[] },
+  sx: number,
+  sy: number,
+  offX: number,
+  offY: number,
+): FaceDetection {
+  const scaled = face.kps.map((p) => ({ x: p.x * sx + offX, y: p.y * sy + offY }));
+  const eyeA = scaled[0]!;
+  const eyeB = scaled[1]!;
+  const nose = scaled[2]!;
+  const mouthA = scaled[3]!;
+  const mouthB = scaled[4]!;
+  const [leftEye, rightEye] = eyeA.x <= eyeB.x ? [eyeA, eyeB] : [eyeB, eyeA];
+  const [leftMouth, rightMouth] = mouthA.x <= mouthB.x ? [mouthA, mouthB] : [mouthB, mouthA];
+  return {
+    box: {
+      x: face.box.x * sx + offX,
+      y: face.box.y * sy + offY,
+      width: face.box.width * sx,
+      height: face.box.height * sy,
+    },
+    confidence: face.score,
+    landmarks: [leftEye, rightEye, nose, leftMouth, rightMouth],
+  };
+}
+
+/** Boxes overlapping more than this are the same face seen twice. */
 const MERGE_IOU = 0.4;
+/** Grid divisions per axis for the small-face tiling pass. */
+const TILE_GRID = 3;
+/** Fraction of each tile that overlaps its neighbour, so faces on seams survive. */
+const TILE_OVERLAP = 0.25;
+/** Faces found before the image is treated as a group shot worth tiling. */
+const CROWD_FACE_COUNT = 2;
 
 function overlapIoU(a: FaceDetection, b: FaceDetection): number {
   const x1 = Math.max(a.box.x, b.box.x);
@@ -280,22 +294,35 @@ function overlapIoU(a: FaceDetection, b: FaceDetection): number {
   return union > 0 ? inter / union : 0;
 }
 
+function merge(existing: FaceDetection[], add: FaceDetection[]): FaceDetection[] {
+  const out = [...existing];
+  for (const face of add) {
+    if (!out.some((m) => overlapIoU(m, face) > MERGE_IOU)) out.push(face);
+  }
+  return out;
+}
+
 /**
- * Detect faces at two input resolutions and take the union.
+ * Run the detector over the image, spending resolution only where it pays.
  *
- * The cheap pass is a quarter of the cost (7 ms against 24 ms) and is trusted
- * only when it is safe to trust: the image is small enough that no face can be
- * hidden, AND it found something. Otherwise the full-resolution pass runs as
- * well and the results are merged.
+ * The trigger is FACE COUNT, not image size. An earlier version gated tiling on
+ * the image's smaller side being over 800 px, which meant the 897x648 crowd
+ * photo that the tiling was measured on never tiled at all -- the gate
+ * contradicted the data it came from. Counting faces is both simpler and
+ * directly tied to what tiling is for: a group shot has small faces; a portrait
+ * does not.
  *
- * Both halves of that rule are load-bearing, each learned the hard way:
+ *  - 320 pass first: 7 ms against 24 ms at 640.
+ *  - Nothing found -> the 640 pass runs. Measured: sunglasses plus a face
+ *    covering on a 460 px photo gives 0 faces at 320 and 1 at 0.747 at 640.
+ *  - Two or more faces -> a group shot, so a 3x3 tiled pass is merged in.
+ *    Measured on the crowd photo: 18 faces plain, 23 with tiles, reaching faces
+ *    30 px across. Tiling at 640 found one more for three times the cost, so the
+ *    tiles stay at the cheap input.
  *
- *  - Escalating when the cheap pass finds NOTHING is what recovers occluded
- *    faces. Measured: sunglasses plus a face covering, on a 460 px image, gives
- *    0 faces at 320 and 1 face at 0.747 at 640. Returning the empty 320 result
- *    silently dropped the case the tool exists for.
- *  - Running the full pass on LARGE images even when the cheap pass succeeded
- *    is what keeps small and distant faces, which the cheap pass resamples away.
+ * Tiling is what recovers small faces: a crop makes a small face occupy more of
+ * the detector's fixed input, which is the same reason whole-image downscaling
+ * loses it.
  */
 export async function detectFacesYuNet(
   detector: YuNetDetector,
@@ -304,20 +331,121 @@ export async function detectFacesYuNet(
 ): Promise<FaceDetection[]> {
   const scoreThreshold = opts.scoreThreshold ?? 0.5;
   const nmsThreshold = opts.nmsThreshold ?? 0.3;
-  const srcW = image.naturalWidth;
-  const srcH = image.naturalHeight;
-  if (srcW === 0 || srcH === 0) {
+  if (image.naturalWidth === 0 || image.naturalHeight === 0) {
     throw new Error("faceBlock: detectFacesYuNet received an image with no pixels");
   }
 
-  const fast = await detectAtSize(detector, image, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
-  const smallImage = Math.min(srcW, srcH) <= SMALL_IMAGE_SIDE;
-  if (fast.length > 0 && smallImage) return fast;
-
-  const full = await detectAtSize(detector, image, FULL_INPUT_SIZE, scoreThreshold, nmsThreshold);
-  const merged = [...fast];
-  for (const face of full) {
-    if (!merged.some((m) => overlapIoU(m, face) > MERGE_IOU)) merged.push(face);
+  let faces = await detectAtSize(detector, image, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  if (faces.length === 0) {
+    faces = await detectAtSize(detector, image, FULL_INPUT_SIZE, scoreThreshold, nmsThreshold);
   }
-  return merged;
+  if (faces.length >= CROWD_FACE_COUNT) {
+    const tiled = await detectTiled(detector, image, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
+    faces = merge(faces, tiled);
+  }
+  return faces;
 }
+
+/**
+ * Draw one region of the image at the detector's input size and detect in it.
+ * Returns boxes in REGION-LOCAL pixels; the caller adds the region's origin.
+ */
+async function detectRegion(
+  detector: YuNetDetector,
+  image: HTMLImageElement,
+  originX: number,
+  originY: number,
+  regionW: number,
+  regionH: number,
+  inputSize: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
+  canvas: HTMLCanvasElement,
+): Promise<FaceDetection[]> {
+  if (canvas.width !== inputSize || canvas.height !== inputSize) {
+    canvas.width = inputSize;
+    canvas.height = inputSize;
+  }
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return [];
+  ctx.clearRect(0, 0, inputSize, inputSize);
+  ctx.drawImage(image, originX, originY, regionW, regionH, 0, 0, inputSize, inputSize);
+  const { data } = ctx.getImageData(0, 0, inputSize, inputSize);
+
+  const plane = inputSize * inputSize;
+  const chw = new Float32Array(3 * plane);
+  // BGR: this detector was trained on OpenCV's native channel order.
+  for (let i = 0; i < plane; i++) {
+    const o = i * 4;
+    chw[i] = data[o + 2]!;
+    chw[plane + i] = data[o + 1]!;
+    chw[2 * plane + i] = data[o]!;
+  }
+  const results = await detector.session.run({
+    [detector.inputName]: new ort.Tensor("float32", chw, [1, 3, inputSize, inputSize]),
+  });
+  const pick = (kind: string, stride: number): Float32Array | undefined => {
+    const name = detector.outputNames[`${kind}_${stride}`];
+    if (!name) return undefined;
+    const t = results[name];
+    return t ? (t.data as Float32Array) : undefined;
+  };
+  const raw = decodeYuNet(
+    {
+      cls: STRIDES.map((s) => pick("cls", s)),
+      obj: STRIDES.map((s) => pick("obj", s)),
+      bbox: STRIDES.map((s) => pick("bbox", s)),
+      kps: STRIDES.map((s) => pick("kps", s)),
+    },
+    detector.priorsBySize.get(inputSize) ?? yunetPriors(inputSize),
+    scoreThreshold,
+  );
+  const sx = regionW / inputSize;
+  const sy = regionH / inputSize;
+  const out: FaceDetection[] = [];
+  for (const face of nms(raw, nmsThreshold)) {
+    out.push(toFaceDetection(face, sx, sy, 0, 0));
+  }
+  return out;
+}
+
+/**
+ * Overlapping tiles, mapped back to full-image coordinates.
+ */
+async function detectTiled(
+  detector: YuNetDetector,
+  image: HTMLImageElement,
+  inputSize: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
+): Promise<FaceDetection[]> {
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
+  const tileW = Math.ceil(width / TILE_GRID);
+  const tileH = Math.ceil(height / TILE_GRID);
+  const stepX = Math.max(1, Math.round(tileW * (1 - TILE_OVERLAP)));
+  const stepY = Math.max(1, Math.round(tileH * (1 - TILE_OVERLAP)));
+
+  const canvas = document.createElement("canvas");
+  const found: FaceDetection[] = [];
+  for (let oy = 0; oy < height; oy += stepY) {
+    for (let ox = 0; ox < width; ox += stepX) {
+      const cw = Math.min(tileW, width - ox);
+      const ch = Math.min(tileH, height - oy);
+      if (cw < 64 || ch < 64) continue;
+      const tile = await detectRegion(
+        detector, image, ox, oy, cw, ch, inputSize, scoreThreshold, nmsThreshold, canvas,
+      );
+      for (const face of tile) {
+        const mapped: FaceDetection = {
+          box: { ...face.box, x: face.box.x + ox, y: face.box.y + oy },
+          confidence: face.confidence,
+          landmarks: face.landmarks?.map((p) => ({ x: p.x + ox, y: p.y + oy })),
+        };
+        if (!found.some((f) => overlapIoU(f, mapped) > MERGE_IOU)) found.push(mapped);
+      }
+    }
+  }
+  return found;
+}
+
