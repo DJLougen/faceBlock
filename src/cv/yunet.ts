@@ -323,6 +323,19 @@ function merge(existing: FaceDetection[], add: FaceDetection[]): FaceDetection[]
  * Tiling is what recovers small faces: a crop makes a small face occupy more of
  * the detector's fixed input, which is the same reason whole-image downscaling
  * loses it.
+ *
+ * What the tiled boxes actually are, checked by drawing them on the image and
+ * looking rather than trusting the count: of four additions to a 17-face crowd,
+ * two were faces the whole-image pass MISSED -- one partially covered, one in
+ * profile. Those are precisely the cases this project keeps failing on. The
+ * other two were a partial face at the frame edge and an offset duplicate of a
+ * face already found.
+ *
+ * They cannot be filtered by score: the genuine additions scored 0.573 and
+ * 0.559 against 0.545 and 0.501 for the dubious ones, so no threshold separates
+ * them on this evidence. A wrong box mostly costs an embedding rather than a
+ * wrong mask, because the identity match still gates what gets covered -- but
+ * that is an argument, not a measurement.
  */
 export async function detectFacesYuNet(
   detector: YuNetDetector,
