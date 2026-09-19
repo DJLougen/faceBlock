@@ -202,11 +202,5 @@ So even a commercial licence from the author is not enough while that second
 model is bundled — the weights themselves forbid commercial use, and the model
 author's MIT-licensed *code* does not license their pretrained *weights*.
 
-Strip or replace `demo/public/models/w600k_mbf.onnx` with a commercially
-licensed face-recognition model before selling or deploying this commercially.
-Alternatives exist: OpenCV Zoo's SFace (`face_recognition_sface_2021dec.onnx`,
-13 MB) is Apache-2.0 licensed and offers a comparable 128-d embedding. Swapping
-it is a contained change — `src/cv/embedder.ts` is the only place the model is
-loaded.
-
-Full asset provenance and checksums: `demo/public/models/provenance.json`.
+A commercially sellable build therefore requires replacing that model. Asset
+provenance and checksums: `demo/public/models/provenance.json`.
