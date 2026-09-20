@@ -156,7 +156,10 @@ The detector was never the bottleneck. Rasterising a 2400×2400 photo pulled ~23
 
 **This is a research preview, not a privacy guarantee.**
 
-- **Misses are still expected.** Detection now uses YuNet, a purpose-built face detector for faces from roughly 10×10 to 300×300 px, rather than a landmark model tuned for frontal faces. On 24 held-out photographs it finds the profile and three-quarter views and the small faces in wide and crowd shots that the old detector returned *nothing* for — a crowd photo went from 2 faces found to 16. It still misses a near-90° side view, and very small, obscured, motion-blurred or low-quality faces. Wrong-person masks remain possible.
+- **Face coverings defeat matching, and no threshold fixes it.** Measured with real photos, not simulations: enrolling a public figure from five plain portraits and then querying photographs of her wearing a surgical-style mask gave similarities of **0.02–0.27** against a 0.40 threshold, while **three unrelated people scored 0.02–0.11**. The two ranges overlap — one masked photo of the right person scored *lower* than a stranger's face. So a masked face cannot be separated from a stranger by any threshold: lowering it to catch masks would start covering innocent people, which is the worse error for this tool.
+- **Sunglasses, face coverings and different hair each hurt a little; combined they defeat detection.** Simulated one at a time, similarity fell from 1.00 to 0.65–0.82 and still matched. Combining two made the detector find no face at all.
+- **Profile and small faces are handled.** Detector-side work recovered faces in profile and three-quarter views, and small faces in crowds and wide shots that previously returned nothing.
+- **Misses are still expected.**
 - **Wrong-person matches are possible.**
 - **Automatically found reference photos can be the wrong person.** Name lookups are ambiguous — a search for a public figure surfaces impersonators, same-name relatives, commemorative plaques, and AI-generated images. FaceBlock filters these and then asks you to confirm, but it cannot be perfect.
 - **Images and video only.** Canvas-rendered content and browser-protected pages (`chrome://`, the Web Store) are not covered.
