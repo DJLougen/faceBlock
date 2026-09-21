@@ -34,7 +34,6 @@ import { cosineNormalized } from "../src/matching/cosine.ts";
 import { resolveCandidates } from "../src/resolve/resolve.ts";
 import { clusterEmbeddings } from "../src/resolve/cluster.ts";
 import type { CandidateImage } from "../src/resolve/types.ts";
-import { expandDetectionBox } from "../src/overlay/coordinates.ts";
 import { MIN_REFERENCE_IMAGES } from "../src/shared/config.ts";
 import type { BlockedIdentity, Box, FaceDetection } from "../src/shared/types.ts";
 import type {
@@ -672,7 +671,7 @@ async function analyzeDecoded(
       const match = matchFace(embedding, identities, { minAgreements: MIN_AGREEMENTS });
       if (match) {
         regions.push({
-          ...expandDetectionBox(det.box, { width: w, height: h }),
+          ...det.box,
           confidence: match.score,
           identityId: match.identityId,
         });

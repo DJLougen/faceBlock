@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   expandBox,
-  expandDetectionBox,
+  expandMaskOverlay,
   mapSourceBoxToRendered,
 } from "../../src/overlay/coordinates.ts";
 import {
-  BOX_PADDING_BOTTOM,
-  BOX_PADDING_TOP,
-  BOX_PADDING_X,
-} from "../../src/shared/config.ts";
+  MASK_OVERLAY_PADDING_BOTTOM,
+  MASK_OVERLAY_PADDING_TOP,
+  MASK_OVERLAY_PADDING_X,
+} from "../../src/overlay/coordinates.ts";
 import type { Box } from "../../src/shared/types.ts";
 
 function expectBox(actual: Box, expected: Box, digits = 6): void {
@@ -105,27 +105,27 @@ describe("mapSourceBoxToRendered", () => {
   });
 });
 
-describe("expandDetectionBox", () => {
+describe("expandMaskOverlay", () => {
   test("adds more padding below the face than the old margin+scale defaults", () => {
     const face = { x: 10, y: 10, width: 20, height: 20 };
-    const out = expandDetectionBox(face);
+    const out = expandMaskOverlay(face);
     const oldBottom = face.y + face.height * (1.25 - 0.2);
     const newBottom = out.y + out.height;
     expect(newBottom - (face.y + face.height)).toBeGreaterThan(oldBottom - (face.y + face.height));
   });
 
-  test("config padding expands asymmetrically for hair and beard", () => {
-    const out = expandDetectionBox({ x: 10, y: 10, width: 20, height: 20 });
+  test("overlay padding expands asymmetrically for hair and beard for hair and beard", () => {
+    const out = expandMaskOverlay({ x: 10, y: 10, width: 20, height: 20 });
     expectBox(out, {
-      x: 10 - 20 * BOX_PADDING_X,
-      y: 10 - 20 * BOX_PADDING_TOP,
-      width: 20 * (1 + 2 * BOX_PADDING_X),
-      height: 20 * (1 + BOX_PADDING_TOP + BOX_PADDING_BOTTOM),
+      x: 10 - 20 * MASK_OVERLAY_PADDING_X,
+      y: 10 - 20 * MASK_OVERLAY_PADDING_TOP,
+      width: 20 * (1 + 2 * MASK_OVERLAY_PADDING_X),
+      height: 20 * (1 + MASK_OVERLAY_PADDING_TOP + MASK_OVERLAY_PADDING_BOTTOM),
     });
   });
 
   test("clamp keeps the box inside the canvas", () => {
-    const out = expandDetectionBox(
+    const out = expandMaskOverlay(
       { x: 2, y: 2, width: 20, height: 20 },
       { width: 30, height: 30 },
     );

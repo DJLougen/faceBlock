@@ -23,6 +23,7 @@
  */
 
 import { MIN_MEDIA_PX } from "../src/shared/config.ts";
+import { expandMaskOverlay } from "../src/overlay/coordinates.ts";
 import { applyDetections, coastTrack, MAX_TRACK_AGE_MS, type Track } from "../src/tracking/iou.ts";
 import { sampleVideoFrame } from "../src/cv/raster.ts";
 import type { Box, ObjectFit, Size } from "../src/shared/types.ts";
@@ -442,7 +443,7 @@ function layoutMasks(t: Tracked): void {
       t.masks[i] = mask;
       root.appendChild(mask);
     }
-    const box = mapRegion(region, t.source, content, fit, pos);
+    const box = expandMaskOverlay(mapRegion(region, t.source, content, fit, pos), content);
     if (box.width <= 0 || box.height <= 0) {
       mask.style.display = "none";
       continue;
@@ -843,7 +844,7 @@ function positionVideoMask(v: Vtracked, mask: HTMLElement, frameBox: Box): void 
   const fit = FITS[cs.objectFit] ? (cs.objectFit as ObjectFit) : "fill";
   const pos = parseObjectPosition(cs.objectPosition);
   const content: Size = { width: rect.width, height: rect.height };
-  const box = mapRegion(intrinsic, source, content, fit, pos);
+  const box = expandMaskOverlay(mapRegion(intrinsic, source, content, fit, pos), content);
   if (box.width <= 0 || box.height <= 0) {
     mask.style.display = "none";
     return;

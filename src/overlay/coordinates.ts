@@ -1,8 +1,3 @@
-import {
-  BOX_PADDING_BOTTOM,
-  BOX_PADDING_TOP,
-  BOX_PADDING_X,
-} from "../shared/config.ts";
 import type { Box, ObjectFit, Size } from "../shared/types.ts";
 
 /**
@@ -96,14 +91,18 @@ function clampBox(box: Box, clamp: Size): Box {
 }
 
 /**
- * Grow YuNet's face box for censoring: extra room above for hair, below for
- * beard/jaw. Applied once in the analyzer; render paths only map coordinates.
+ * Overlay-only mask padding for hair/beard coverage. Applied at render time
+ * in content/renderer — not used by enrollment or embedding crops.
  */
-export function expandDetectionBox(box: Box, clamp?: Size): Box {
-  let x = box.x - box.width * BOX_PADDING_X;
-  let y = box.y - box.height * BOX_PADDING_TOP;
-  const width = box.width * (1 + 2 * BOX_PADDING_X);
-  const height = box.height * (1 + BOX_PADDING_TOP + BOX_PADDING_BOTTOM);
+export const MASK_OVERLAY_PADDING_X = 0.18;
+export const MASK_OVERLAY_PADDING_TOP = 0.42;
+export const MASK_OVERLAY_PADDING_BOTTOM = 0.32;
+
+export function expandMaskOverlay(box: Box, clamp?: Size): Box {
+  const x = box.x - box.width * MASK_OVERLAY_PADDING_X;
+  const y = box.y - box.height * MASK_OVERLAY_PADDING_TOP;
+  const width = box.width * (1 + 2 * MASK_OVERLAY_PADDING_X);
+  const height = box.height * (1 + MASK_OVERLAY_PADDING_TOP + MASK_OVERLAY_PADDING_BOTTOM);
   const out = { x, y, width, height };
   return clamp ? clampBox(out, clamp) : out;
 }

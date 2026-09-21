@@ -15,23 +15,10 @@ export const MIN_GALLERY_AGREEMENTS = 5;
 export const MAX_PROTOTYPES = 5;
 export const MIN_REFERENCE_IMAGES = 3;
 
-/**
- * Fractional padding applied around YuNet's tight face box before masking.
- * Top is larger for hair; bottom is larger for beards/jaw — the old uniform
- * margin+scale pair grew mostly upward and left beards exposed.
- */
-export const BOX_PADDING_X = 0.18;
-export const BOX_PADDING_TOP = 0.42;
-export const BOX_PADDING_BOTTOM = 0.32;
-
-/** @deprecated Use BOX_PADDING_* — kept for callers still on margin+scale expandBox. */
-export const BOX_MARGIN_X = BOX_PADDING_X;
-/** @deprecated Use BOX_PADDING_TOP */
-export const BOX_MARGIN_Y = BOX_PADDING_TOP;
-export const BOX_MARGIN_TOP = BOX_PADDING_TOP;
-export const BOX_MARGIN_BOTTOM = BOX_PADDING_BOTTOM;
-export const BOX_SCALE_X = 1 + 2 * BOX_PADDING_X;
-export const BOX_SCALE_Y = 1 + BOX_PADDING_TOP + BOX_PADDING_BOTTOM;
+export const BOX_MARGIN_X = 0.15;
+export const BOX_MARGIN_Y = 0.2;
+export const BOX_SCALE_X = 1.2;
+export const BOX_SCALE_Y = 1.25;
 
 export const MIN_FACE_PX = 24;
 export const MIN_MEDIA_PX = 32;

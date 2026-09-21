@@ -1,5 +1,5 @@
 import type { Box, CensorRegion, ObjectFit, Size } from "../shared/types.ts";
-import { expandDetectionBox, mapSourceBoxToRendered } from "./coordinates.ts";
+import { expandMaskOverlay, mapSourceBoxToRendered } from "./coordinates.ts";
 
 const LAYER_ATTR = "data-faceblock-overlay";
 
@@ -35,7 +35,7 @@ export function renderCensors(
   const rendered: Size = { width: img.clientWidth, height: img.clientHeight };
   for (const region of regions) {
     const mapped = mapSourceBoxToRendered(region, source, rendered, objectFit);
-    const box = expandDetectionBox(mapped, rendered);
+    const box = expandMaskOverlay(mapped, rendered);
     layer.appendChild(censorEl(box, region.identityId, region.confidence));
   }
 }
