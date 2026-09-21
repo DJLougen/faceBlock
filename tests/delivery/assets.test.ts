@@ -16,6 +16,7 @@ import {
   ORT_RUNTIME_FILES,
   requiredDistFiles,
   SHIPPED_MODELS,
+  SPONSOR_FILES,
   THIRD_PARTY_LICENSES,
   verifyArchiveListing,
   verifyBuiltTree,
@@ -103,6 +104,9 @@ async function makeFakeRoot(): Promise<{ root: string; dist: string }> {
   for (const name of THIRD_PARTY_LICENSES) {
     await wd(`licenses/third-party/${name}`, `terms for ${name}`);
   }
+  for (const file of SPONSOR_FILES) {
+    await wd(`sponsors/${file}`, `<svg>${file}</svg>`);
+  }
   return { root, dist };
 }
 
@@ -136,6 +140,10 @@ describe("classifyDistPath", () => {
       expect(classifyDistPath(f, DEMO_SAMPLES)).toBe("allowed");
     }
     expect(classifyDistPath("samples/img.jpg", DEMO_SAMPLES)).toBe("allowed");
+    for (const f of SPONSOR_FILES) {
+      expect(classifyDistPath(`sponsors/${f}`, DEMO_SAMPLES)).toBe("allowed");
+      expect(classifyDistPath(`sponsors/${f}`, NO_SAMPLES)).toBe("allowed");
+    }
   });
   test("forbids the retired landmarker and anything outside the allowlist", () => {
     for (const rel of NEVER_SHIPPED) {
@@ -148,6 +156,8 @@ describe("classifyDistPath", () => {
       "ort/ort-wasm-simd-threaded.jsep.wasm",
       "licenses/third-party/evil.txt",
       "samples/undeclared.jpg",
+      "sponsors/evil.svg",
+      "samples/appearance-fixtures.json",
       "samples/../secret",
       "background.js.map",
       ".DS_Store",

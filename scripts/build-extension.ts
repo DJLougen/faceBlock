@@ -1,6 +1,6 @@
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { SHIPPED_MODELS, verifySourceAssets } from "./verify-assets";
+import { declaredSamples, SHIPPED_MODELS, SPONSOR_FILES, verifySourceAssets } from "./verify-assets";
 
 // Fail closed before touching the output: a missing or tampered model must
 // stop the build, not ship silently inside it.
@@ -29,7 +29,10 @@ for (const [entry, format] of [["background", "esm"], ["offscreen", "esm"], ["op
 for (const name of ["manifest.json", "references.json", "options.html", "options.css", "offscreen.html"]) {
   await cp(`extension/${name}`, `${out}/${name}`);
 }
-await cp("extension/sponsors", `${out}/sponsors`, { recursive: true });
+await mkdir(`${out}/sponsors`, { recursive: true });
+for (const file of SPONSOR_FILES) {
+  await cp(`extension/sponsors/${file}`, `${out}/sponsors/${file}`);
+}
 // Payload is an explicit allowlist, not a directory copy: only the models the
 // runtime actually loads ship. The retired MediaPipe landmarker stays in
 // demo/public/models/ but is never packaged (see verify-assets NEVER_SHIPPED).
@@ -41,8 +44,15 @@ await cp("demo/public/models/provenance.json", `${out}/models/provenance.json`);
 // The local-demo build keeps the declared sample fixtures so the fixture
 // pages and curated references work offline. `bun run package` strips them —
 // the demo corpus asserts no redistribution license.
-for (const folder of ["ort", "samples"]) {
-  await cp(`demo/public/${folder}`, `${out}/${folder}`, { recursive: true });
+await cp("demo/public/ort", `${out}/ort`, { recursive: true });
+// Samples are an allowlist, not a directory copy. Diagnostic files such as
+// appearance-fixtures.json live beside the demo photos but are not extension
+// payload; copying the folder wholesale fails the ship gate.
+const declared = await declaredSamples(".");
+if (declared.error !== null) throw new Error(declared.error);
+await mkdir(`${out}/samples`, { recursive: true });
+for (const rel of declared.samples) {
+  await cp(`demo/public/${rel}`, `${out}/${rel}`);
 }
 // License notices travel with the payload: the project's own grant plus the
 // verbatim third-party terms for every bundled model and runtime.

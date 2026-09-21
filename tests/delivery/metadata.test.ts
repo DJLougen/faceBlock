@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import {
   NEVER_SHIPPED,
   SHIPPED_MODELS,
+  SPONSOR_FILES,
   THIRD_PARTY_LICENSES,
 } from "../../scripts/verify-assets";
 
@@ -51,13 +52,17 @@ describe("manifest and packaging inputs", () => {
     const manifest = await readJson("extension/manifest.json");
     const war = manifest.web_accessible_resources as Array<Record<string, unknown>>;
     expect(Array.isArray(war)).toBe(true);
+    const resources = war.flatMap((entry) => (entry.resources as string[] | undefined) ?? []);
+    expect(resources).toEqual(SPONSOR_FILES.map((file) => `sponsors/${file}`));
     const sponsor = war.find((entry) =>
       (entry.resources as string[] | undefined)?.includes("sponsors/placeholder.svg"),
     );
     expect(sponsor).toBeDefined();
     expect(sponsor!.matches).toEqual(["http://*/*", "https://*/*"]);
     expect(sponsor!.use_dynamic_url).toBe(true);
-    expect(existsSync("extension/sponsors/placeholder.svg")).toBe(true);
+    for (const rel of resources) {
+      expect(existsSync(`extension/${rel}`)).toBe(true);
+    }
   });
   test("package.json exposes the verify and packaging gates", async () => {
     const pkg = await readJson("package.json");

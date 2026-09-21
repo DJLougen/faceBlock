@@ -45,6 +45,9 @@ export const ORT_RUNTIME_FILES = [
   "ort-wasm-simd-threaded.wasm",
 ] as const;
 
+/** Generic sponsor creative the extension loads for the earn-mask preview. */
+export const SPONSOR_FILES = ["placeholder.svg"] as const;
+
 /** Third-party license/terms texts that must ship next to the payload. */
 export const THIRD_PARTY_LICENSES = [
   "yunet-MIT.txt",
@@ -202,6 +205,10 @@ export function classifyDistPath(
         : "forbidden";
     case "samples":
       return allowedSamples.has(norm) ? "allowed" : "forbidden";
+    case "sponsors":
+      return (SPONSOR_FILES as readonly string[]).includes(rest)
+        ? "allowed"
+        : "forbidden";
     default:
       return "forbidden";
   }
@@ -215,6 +222,7 @@ export function requiredDistFiles(allowedSamples: ReadonlySet<string>): string[]
     "models/provenance.json",
     ...ORT_RUNTIME_FILES.map((f) => `ort/${f}`),
     ...THIRD_PARTY_LICENSES.map((f) => `licenses/third-party/${f}`),
+    ...SPONSOR_FILES.map((f) => `sponsors/${f}`),
     ...allowedSamples,
   ];
 }
