@@ -22,14 +22,7 @@
  * sight (disclosed once via console.info).
  */
 
-import {
-  BOX_MARGIN_X,
-  BOX_MARGIN_Y,
-  BOX_SCALE_X,
-  BOX_SCALE_Y,
-  MIN_MEDIA_PX,
-} from "../src/shared/config.ts";
-import { expandBox } from "../src/overlay/coordinates.ts";
+import { MIN_MEDIA_PX } from "../src/shared/config.ts";
 import { applyDetections, coastTrack, MAX_TRACK_AGE_MS, type Track } from "../src/tracking/iou.ts";
 import { sampleVideoFrame } from "../src/cv/raster.ts";
 import type { Box, ObjectFit, Size } from "../src/shared/types.ts";
@@ -449,12 +442,7 @@ function layoutMasks(t: Tracked): void {
       t.masks[i] = mask;
       root.appendChild(mask);
     }
-    const mapped = mapRegion(region, t.source, content, fit, pos);
-    const box = expandBox(
-      mapped,
-      { marginX: BOX_MARGIN_X, marginY: BOX_MARGIN_Y, scaleX: BOX_SCALE_X, scaleY: BOX_SCALE_Y },
-      content,
-    );
+    const box = mapRegion(region, t.source, content, fit, pos);
     if (box.width <= 0 || box.height <= 0) {
       mask.style.display = "none";
       continue;
@@ -855,12 +843,7 @@ function positionVideoMask(v: Vtracked, mask: HTMLElement, frameBox: Box): void 
   const fit = FITS[cs.objectFit] ? (cs.objectFit as ObjectFit) : "fill";
   const pos = parseObjectPosition(cs.objectPosition);
   const content: Size = { width: rect.width, height: rect.height };
-  const mapped = mapRegion(intrinsic, source, content, fit, pos);
-  const box = expandBox(
-    mapped,
-    { marginX: BOX_MARGIN_X, marginY: BOX_MARGIN_Y, scaleX: BOX_SCALE_X, scaleY: BOX_SCALE_Y },
-    content,
-  );
+  const box = mapRegion(intrinsic, source, content, fit, pos);
   if (box.width <= 0 || box.height <= 0) {
     mask.style.display = "none";
     return;
