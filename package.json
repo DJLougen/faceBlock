@@ -13,7 +13,8 @@
     "build:extension": "bun scripts/build-extension.ts",
     "package": "bun scripts/package-extension.ts",
     "check": "bun test tests && bun run typecheck && bun run verify:assets",
-    "diagnose:appearance": "bun scripts/diagnose-appearance.ts"
+    "diagnose:appearance": "bun scripts/diagnose-appearance.ts",
+    "eval:appearance": "bun scripts/eval-appearance-corpus.ts"
   },
   "dependencies": {
     "onnxruntime-web": "^1.30.0"

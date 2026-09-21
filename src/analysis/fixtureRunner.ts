@@ -11,6 +11,8 @@ import { createYuNetDetector, detectFacesYuNetRaster, type YuNetDetector } from 
 import { cosineNormalized } from "../matching/cosine.ts";
 import { matchFace } from "../matching/matcher.ts";
 import { expandDetectionBox } from "../overlay/coordinates.ts";
+import { clusterEmbeddings } from "../resolve/cluster.ts";
+import { MIN_REFERENCE_IMAGES } from "../shared/config.ts";
 import { MATCH_THRESHOLD } from "../../extension/enroll.ts";
 import type { BlockedIdentity, Box, FaceDetection, Raster } from "../shared/types.ts";
 import { loadFixtureRaster } from "./fixtureDecode.ts";
@@ -20,6 +22,14 @@ import {
 } from "./legacyMask.ts";
 
 export const DEFAULT_MODEL_ROOT = resolve(import.meta.dir, "../../demo/public");
+
+/** Same near-duplicate cutoff as extension/offscreen.ts RESOLVE_PREVIEW. */
+export const ENROLL_DUPLICATE_COSINE = 0.98;
+
+/** Same agreement count as extension/offscreen.ts ANALYZE paths. */
+export const ANALYZE_MIN_AGREEMENTS = 1;
+
+export type EnrollmentMode = "curated" | "resolve-cluster";
 
 export interface FixtureAssetPaths {
   modelRoot?: string;
@@ -55,7 +65,16 @@ export interface AppearanceFixtureReport {
   queryPath: string;
   identityId: string;
   enrollFaceCounts: number[];
+  enrollment: EnrollmentBuildResult;
   query: AppearanceQueryReport;
+}
+
+export interface EnrollmentBuildResult {
+  mode: EnrollmentMode;
+  galleryPaths: string[];
+  gallerySize: number;
+  meetsMinReferenceImages: boolean;
+  rejected: { path: string; reason: string }[];
 }
 
 function abs(root: string, rel: string): string {
@@ -100,7 +119,11 @@ function bestCosine(
   let best: number | null = null;
   let bestId: string | null = null;
   for (const identity of identities) {
-    for (const g of identity.embeddings) {
+    const gallery =
+      identity.prototypes && identity.prototypes.length > 0
+        ? identity.prototypes
+        : identity.embeddings;
+    for (const g of gallery) {
       const s = cosineNormalized(embedding, g);
       if (best === null || s > best) {
         best = s;
@@ -111,45 +134,103 @@ function bestCosine(
   return { bestCosine: best, bestIdentityId: bestId };
 }
 
-export async function runAppearanceFixture(
-  opts: {
-    fixtureId: string;
-    enrollPaths: string[];
-    queryPath: string;
-    identityId: string;
-    minAgreements?: number;
-    threshold?: number;
-  } & FixtureAssetPaths,
-): Promise<AppearanceFixtureReport> {
-  const { detector, embedder } = await createFixtureModels(opts);
-  const minAgreements = opts.minAgreements ?? 1;
-  const threshold = opts.threshold ?? MATCH_THRESHOLD;
+interface EmbeddedEnrollPath {
+  path: string;
+  embedding: Float32Array;
+}
 
-  const enrollEmbeddings: Float32Array[] = [];
+/**
+ * Mirror production enrollment: one face per photo, near-duplicate collapse, then
+ * either curated (references.json path) or resolve-cluster (Wikimedia path).
+ */
+export async function buildProductionEnrollment(
+  detector: YuNetDetector,
+  embedder: Embedder,
+  enrollPaths: readonly string[],
+  mode: EnrollmentMode,
+): Promise<{ enrollment: EnrollmentBuildResult; enrollFaceCounts: number[]; identity: BlockedIdentity; threshold: number }> {
+  const threshold = MATCH_THRESHOLD;
+  const embedded: EmbeddedEnrollPath[] = [];
   const enrollFaceCounts: number[] = [];
-  for (const p of opts.enrollPaths) {
+  const rejected: { path: string; reason: string }[] = [];
+
+  for (const p of enrollPaths) {
     const raster = await loadFixtureRaster(p);
     const dets = await detectFacesYuNetRaster(detector, raster);
     enrollFaceCounts.push(dets.length);
-    if (dets.length === 1) {
-      enrollEmbeddings.push(await embedDetectedFaceRaster(embedder, raster, dets[0]!));
+    if (dets.length !== 1) {
+      rejected.push({ path: p, reason: `${dets.length} faces` });
+      continue;
     }
+    embedded.push({
+      path: p,
+      embedding: await embedDetectedFaceRaster(embedder, raster, dets[0]!),
+    });
   }
-  if (enrollEmbeddings.length === 0) {
+
+  const unique: EmbeddedEnrollPath[] = [];
+  for (const item of embedded) {
+    if (
+      unique.some((u) => cosineNormalized(u.embedding, item.embedding) >= ENROLL_DUPLICATE_COSINE)
+    ) {
+      rejected.push({ path: item.path, reason: "duplicate" });
+      continue;
+    }
+    unique.push(item);
+  }
+
+  let galleryPaths: string[];
+  let galleryEmbeddings: Float32Array[];
+  if (mode === "curated") {
+    galleryPaths = unique.map((u) => u.path);
+    galleryEmbeddings = unique.map((u) => u.embedding);
+  } else {
+    const cluster = clusterEmbeddings(
+      unique.map((u) => u.embedding),
+      { maxPrototypes: 8 },
+    );
+    for (const rej of cluster.rejected) {
+      rejected.push({ path: unique[rej.index]?.path ?? "", reason: rej.reason });
+    }
+    galleryPaths = cluster.prototypes.map((i) => unique[i]!.path);
+    galleryEmbeddings = cluster.prototypes.map((i) => unique[i]!.embedding);
+  }
+
+  if (galleryEmbeddings.length === 0) {
     throw new Error(
-      `fixture ${opts.fixtureId}: no enroll embeddings — face counts: ${enrollFaceCounts.join(", ")}`,
+      `enrollment produced no gallery vectors — face counts: ${enrollFaceCounts.join(", ")}`,
     );
   }
 
+  const enrollment: EnrollmentBuildResult = {
+    mode,
+    galleryPaths,
+    gallerySize: galleryEmbeddings.length,
+    meetsMinReferenceImages: galleryEmbeddings.length >= MIN_REFERENCE_IMAGES,
+    rejected,
+  };
+
   const identity: BlockedIdentity = {
-    id: opts.identityId,
-    displayName: opts.identityId,
-    embeddings: enrollEmbeddings,
+    id: "fixture",
+    displayName: "fixture",
+    embeddings: galleryEmbeddings,
     threshold,
     createdAt: 0,
   };
 
-  const queryRaster = await loadFixtureRaster(opts.queryPath);
+  return { enrollment, enrollFaceCounts, identity, threshold };
+}
+
+export async function queryAppearanceImage(
+  detector: YuNetDetector,
+  embedder: Embedder,
+  queryPath: string,
+  identity: BlockedIdentity,
+  opts?: { minAgreements?: number; threshold?: number },
+): Promise<AppearanceQueryReport> {
+  const minAgreements = opts?.minAgreements ?? ANALYZE_MIN_AGREEMENTS;
+  const threshold = opts?.threshold ?? identity.threshold;
+  const queryRaster = await loadFixtureRaster(queryPath);
   const w = queryRaster.width;
   const h = queryRaster.height;
   const imageSize = { width: w, height: h };
@@ -173,20 +254,55 @@ export async function runAppearanceFixture(
   }
 
   return {
+    imagePath: queryPath,
+    width: w,
+    height: h,
+    faceCount: dets.length,
+    threshold,
+    minAgreements,
+    faces,
+  };
+}
+
+export async function runAppearanceFixture(
+  opts: {
+    fixtureId: string;
+    enrollPaths: string[];
+    queryPath: string;
+    identityId: string;
+    enrollmentMode?: EnrollmentMode;
+    minAgreements?: number;
+    threshold?: number;
+  } & FixtureAssetPaths,
+): Promise<AppearanceFixtureReport> {
+  const { detector, embedder } = await createFixtureModels(opts);
+  const enrollmentMode = opts.enrollmentMode ?? "curated";
+  const minAgreements = opts.minAgreements ?? ANALYZE_MIN_AGREEMENTS;
+  const { enrollment, enrollFaceCounts, identity, threshold } = await buildProductionEnrollment(
+    detector,
+    embedder,
+    opts.enrollPaths,
+    enrollmentMode,
+  );
+  identity.id = opts.identityId;
+  identity.displayName = opts.identityId;
+  if (opts.threshold !== undefined) {
+    identity.threshold = opts.threshold;
+  }
+
+  const query = await queryAppearanceImage(detector, embedder, opts.queryPath, identity, {
+    minAgreements,
+    threshold: opts.threshold ?? threshold,
+  });
+
+  return {
     fixtureId: opts.fixtureId,
     enrollPaths: opts.enrollPaths,
     queryPath: opts.queryPath,
     identityId: opts.identityId,
     enrollFaceCounts,
-    query: {
-      imagePath: opts.queryPath,
-      width: w,
-      height: h,
-      faceCount: dets.length,
-      threshold,
-      minAgreements,
-      faces,
-    },
+    enrollment,
+    query,
   };
 }
 

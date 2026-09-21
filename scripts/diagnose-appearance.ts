@@ -2,7 +2,7 @@
  * Print ONNX diagnostics for appearance-change fixtures (detection, cosine, mask bounds).
  *
  *   bun scripts/diagnose-appearance.ts
- *   bun scripts/diagnose-appearance.ts --fixture theo-clean-to-user-labeled
+ *   bun scripts/diagnose-appearance.ts --fixture theo-appearance-drift-probe
  */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -17,6 +17,7 @@ interface FixtureDef {
   enroll: string[];
   query: string;
   identityId: string;
+  enrollmentMode?: "curated" | "resolve-cluster";
 }
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -32,6 +33,7 @@ function summarize(report: AppearanceFixtureReport): unknown {
   return {
     fixtureId: report.fixtureId,
     enrollFaceCounts: report.enrollFaceCounts,
+    enrollment: report.enrollment,
     query: {
       path: report.queryPath,
       faceCount: report.query.faceCount,
@@ -81,6 +83,7 @@ for (const def of selected) {
     enrollPaths: def.enroll.map((p) => resolve(ROOT, p)),
     queryPath: resolve(ROOT, def.query),
     identityId: def.identityId,
+    enrollmentMode: def.enrollmentMode,
   });
   console.log(JSON.stringify(summarize(report), null, 2));
 }

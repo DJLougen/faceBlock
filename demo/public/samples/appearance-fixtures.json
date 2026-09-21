@@ -1,28 +1,67 @@
 {
-  "notice": "Local ONNX regression fixtures for appearance change (hair color, facial hair). Records detection, bestCosine, and mask bounds — not geometry unit tests alone. Sample bytes stay user/local eval only; do not redistribute.",
+  "notice": "Local ONNX regression fixtures for appearance change (hair color, facial hair). Records detection, bestCosine, and mask bounds — not geometry unit tests alone. Threshold changes require measured FAR/FRR on this corpus; do not tune from a single positive pair.",
   "runtime": {
-    "threshold": "extension/enroll.ts MATCH_THRESHOLD",
-    "singleGalleryAppearanceSlack": "src/shared/config.ts SINGLE_GALLERY_APPEARANCE_SLACK (0.025)",
-    "minAgreements": 1,
+    "threshold": "extension/enroll.ts MATCH_THRESHOLD (0.4)",
+    "minAgreements": "extension/offscreen.ts ANALYZE minAgreements (1)",
+    "minReferenceImages": "src/shared/config.ts MIN_REFERENCE_IMAGES (3)",
+    "duplicateCosine": "extension/offscreen.ts DUPLICATE_COSINE (0.98)",
+    "enrollmentModes": {
+      "curated": "references.json path — embed each reference, dedup only",
+      "resolve-cluster": "Wikimedia path — dedup, clusterEmbeddings, prototype gallery"
+    },
     "models": "demo/public/models (same filenames as shipped extension)"
   },
   "fixtures": [
     {
-      "id": "theo-clean-to-user-labeled",
-      "description": "Enroll on theo.jpg (GitHub avatar); query theo-user-02.jpg (user-labeled, different look). Proxy for hair/facial-hair drift when the nightclub photo cannot be committed.",
+      "id": "theo-appearance-drift-probe",
+      "description": "Single clean avatar enroll → appearance-changed query. Documents FRR under sparse enroll; NOT production enrollment (needs diverse refs).",
+      "enrollmentMode": "curated",
       "enroll": ["demo/public/samples/theo.jpg"],
       "query": "demo/public/samples/theo-user-02.jpg",
       "identityId": "theo-browne",
+      "samePerson": true,
+      "expectMatch": false,
       "measured": {
         "date": "2026-09-21",
-        "enrollFaceCounts": [1],
-        "queryFaceCount": 1,
+        "gallerySize": 1,
+        "meetsMinReferenceImages": false,
         "primaryConfidence": 0.905,
         "primaryBestCosine": 0.397,
         "matchedAtThreshold040": false,
-        "matchedWithSingleGallerySlack": true,
         "maskCurrentHeight": 469.568,
         "maskLegacyAnalyzerHeight": 337.333
+      }
+    },
+    {
+      "id": "theo-curated-references",
+      "description": "Production curated enroll (extension/references.json theo-browne refs). Gallery includes query photo; measures FAR on unrelated controls.",
+      "enrollmentMode": "curated",
+      "enroll": [
+        "demo/public/samples/theo.jpg",
+        "demo/public/samples/theo-user-02.jpg"
+      ],
+      "queries": [
+        {
+          "path": "demo/public/samples/theo-user-02.jpg",
+          "label": "positive-in-gallery",
+          "expectMatch": true
+        },
+        {
+          "path": "demo/public/samples/dwarkesh.jpg",
+          "label": "negative-unrelated",
+          "expectMatch": false
+        },
+        {
+          "path": "demo/public/samples/unrelated.jpg",
+          "label": "negative-control",
+          "expectMatch": false
+        }
+      ],
+      "identityId": "theo-browne",
+      "measured": {
+        "date": "2026-09-21",
+        "gallerySize": 2,
+        "meetsMinReferenceImages": false
       }
     }
   ]
