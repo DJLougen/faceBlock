@@ -4,3 +4,4 @@ dist/
 *.log
 dist-extension/
 faceBlock-*.zip
+dist-package/

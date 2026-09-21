@@ -1,8 +1,14 @@
 /**
  * FaceBlock offscreen document: the only place inference runs in the real
- * extension. Background forwards ENROLL/ANALYZE here; this file owns the
- * MediaPipe landmarker and the ArcFace ONNX session as lazy singletons and
- * serializes every job through one bounded queue.
+ * extension. Background forwards ANALYZE/ANALYZE_FRAME/RESOLVE_PREVIEW/
+ * CONFIRM_ENROLL here; this file owns the YuNet detector and the ArcFace
+ * ONNX session as lazy singletons.
+ *
+ * Two scheduling lanes keep the model serialized without letting the network
+ * stall it (see jobqueue.ts): downloads and decodes run in a bounded pool,
+ * while detect+embed work is enqueued one unit at a time — so a fresh video
+ * frame can run between enrollment candidates, and at most one model
+ * execution is ever in flight.
  *
  * All model/runtime assets load via chrome.runtime.getURL — nothing leaves
  * the extension. ANALYZE fetches the target image bytes (read-only download,
@@ -11,8 +17,9 @@
  * frames are decoded, analysed on device, and discarded — never cached,
  * persisted, or uploaded (plan §14/§22).
  *
- * The self-seed flow (RESOLVE_PREVIEW/CONFIRM_ENROLL) transmits ONLY the
- * typed name to Wikimedia endpoints to find candidate photos. Downloaded
+ * The enrollment flow (RESOLVE_PREVIEW/CONFIRM_ENROLL) transmits ONLY the
+ * typed name to Wikimedia endpoints, and only when the name is not in the
+ * curated references.json — curated references stay fully local. Downloaded
  * reference photos are decoded, embedded, and discarded in memory — never
  * persisted and never uploaded (plan §11/§14). Only embeddings plus the
  * minimal EnrollPreviewFace metadata survive, and only on confirm.
@@ -20,8 +27,8 @@
 
 import { createYuNetDetector, detectFacesYuNet, type YuNetDetector } from "../src/cv/yunet.ts";
 import { createEmbedder, embedAligned, type Embedder } from "../src/cv/embedder.ts";
-import { alignFace } from "../src/cv/align.ts";
-import { imageToRaster, imageToRasterRegion } from "../src/cv/raster.ts";
+import { alignFace, alignmentSourceRect } from "../src/cv/align.ts";
+import { imageToRasterRegion } from "../src/cv/raster.ts";
 import { matchFace } from "../src/matching/matcher.ts";
 import { cosineNormalized } from "../src/matching/cosine.ts";
 import { resolveCandidates } from "../src/resolve/resolve.ts";
@@ -29,7 +36,24 @@ import { clusterEmbeddings } from "../src/resolve/cluster.ts";
 import type { CandidateImage } from "../src/resolve/types.ts";
 import { BOX_SCALE_X, BOX_SCALE_Y, MIN_REFERENCE_IMAGES } from "../src/shared/config.ts";
 import type { BlockedIdentity, Box, FaceDetection } from "../src/shared/types.ts";
-import type { EnrollPreview, EnrollPreviewFace, FrameResult, ImageResult, ReferencePerson, SavedIdentity } from "./protocol.ts";
+import type {
+  EnrollPreview,
+  EnrollPreviewFace,
+  FaceDiagnostics,
+  FrameResult,
+  ImageResult,
+  ReferencePerson,
+  SavedIdentity,
+} from "./protocol.ts";
+import {
+  MATCH_THRESHOLD,
+  identityId,
+  normalizeName,
+  toBlockedIdentities,
+  toPreviewFaces,
+} from "./enroll.ts";
+import { createJobQueue, createPool } from "./jobqueue.ts";
+import { checkImageType, errText, fetchImageBytes, base64ToBytes, MAX_IMAGE_BYTES } from "./net.ts";
 import * as ort from "onnxruntime-web/wasm";
 
 /**
@@ -49,7 +73,7 @@ declare const chrome: {
       addListener(
         cb: (
           message: unknown,
-          sender: { id?: string; tab?: unknown },
+          sender: { id?: string; tab?: unknown; url?: string },
           sendResponse: (response: unknown) => void,
         ) => boolean | void,
       ): void;
@@ -58,29 +82,43 @@ declare const chrome: {
 };
 
 /* ---------- limits ---------- */
-const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MiB streamed cap
-const MAX_PIXELS = 12_000_000; // 12 MP decode cap, enforced before canvas
-const FETCH_TIMEOUT_MS = 15_000;
+const MAX_PIXELS = 12_000_000; // 12 MP decode cap, enforced after decode on every path
 const DECODE_TIMEOUT_MS = 30_000;
-const JOB_TIMEOUT_MS = 120_000; // hard ceiling per ENROLL/ANALYZE job
+const JOB_TIMEOUT_MS = 120_000; // hard ceiling per serialized inference job
 const MAX_QUEUE_WAIT_MS = 60_000; // queued jobs older than this are dropped
 const MAX_QUEUE_PENDING = 32;
 const MAX_RESOLVE_FETCH = 48; // candidates actually downloaded per RESOLVE_PREVIEW
-const RESOLVE_FETCH_CONCURRENCY = 4; // bounded download+embed worker pool
+const NETWORK_CONCURRENCY = 4; // bounded download+decode pool
+const NETWORK_MAX_PENDING = 64; // download waiters beyond this are rejected
 const MAX_PREVIEW_PROTOTYPES = 8; // diverse faces offered for confirmation
 const DUPLICATE_COSINE = 0.98; // near-identical crops collapse to one face
+const MIN_AGREEMENTS = 1; // matchFace agreement count used by ANALYZE paths
+
+/* ---------- scheduling lanes ---------- */
 
 /**
- * Experimental operating point for the real w600k_mbf model. NOT calibrated —
- * false negatives are expected; see extension/protocol.ts contract.
+ * The serial model lane: at most one detect/embed unit runs at a time.
+ * Frame jobs are prioritized and supersede still-pending frames.
  */
-const MATCH_THRESHOLD = 0.4;
+const inferenceQueue = createJobQueue({
+  maxWaitMs: MAX_QUEUE_WAIT_MS,
+  maxPending: MAX_QUEUE_PENDING,
+  jobTimeoutMs: JOB_TIMEOUT_MS,
+});
+
+/** The network lane: downloads and decodes never hold the model lane. */
+const networkPool = createPool(NETWORK_CONCURRENCY, NETWORK_MAX_PENDING);
+
+/**
+ * The candidate lane: bounds how many decoded candidate bitmaps are alive at
+ * once. A candidate holds its decoded image from download through its
+ * serialized inference unit, so without this cap a 48-candidate resolve
+ * could keep dozens of multi-MP bitmaps resident while they wait on the
+ * model lane. Live video frames bypass this lane entirely.
+ */
+const candidatePool = createPool(NETWORK_CONCURRENCY, NETWORK_MAX_PENDING);
 
 /* ---------- small helpers ---------- */
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 function extUrl(path: string): string {
   return chrome.runtime.getURL(path.replace(/^\/+/, ""));
 }
@@ -101,14 +139,11 @@ let embedderPromise: Promise<Embedder> | null = null;
 let yunetPromise: Promise<YuNetDetector> | null = null;
 
 /**
- * YuNet is the DETECTOR. It replaces the landmarker's detection role because
- * that model is tuned for near-frontal faces and returned nothing for profile
- * views or faces that are small within a large photo — misses that happen
- * before matching, so no similarity filtering can recover them.
- *
- * The landmarker is retained only as a fallback: if YuNet fails to load or
- * finds nothing, detection still works rather than silently disabling the
- * extension.
+ * YuNet is the only detector on every path, deliberately. Enrolment and
+ * matching must agree on landmark conventions: aligning enrolments with one
+ * model and queries with another produces differently-cropped 112x112 chips
+ * and drops same-person similarity below the match threshold (measured:
+ * masks fell from 9 to 6 while detection rose).
  */
 function getYuNet(): Promise<YuNetDetector> {
   if (!yunetPromise) {
@@ -136,139 +171,7 @@ function getEmbedder(): Promise<Embedder> {
   return embedderPromise;
 }
 
-/* ---------- bounded serial queue ---------- */
-interface Job {
-  run: () => Promise<unknown>;
-  resolve: (v: unknown) => void;
-  reject: (e: unknown) => void;
-  enqueuedAt: number;
-}
-
-const queue: Job[] = [];
-let pumping = false;
-
-function enqueue<T>(run: () => Promise<T>): Promise<T> {
-  const now = Date.now();
-  while (queue.length > 0 && now - queue[0]!.enqueuedAt > MAX_QUEUE_WAIT_MS) {
-    queue.shift()!.reject(
-      new Error("faceBlock: request expired waiting in the inference queue"),
-    );
-  }
-  if (queue.length >= MAX_QUEUE_PENDING) {
-    return Promise.reject(
-      new Error(
-        `faceBlock: inference queue full (${MAX_QUEUE_PENDING} pending) — try again shortly`,
-      ),
-    );
-  }
-  return new Promise<T>((resolve, reject) => {
-    queue.push({
-      run: run as () => Promise<unknown>,
-      resolve: resolve as (v: unknown) => void,
-      reject,
-      enqueuedAt: now,
-    });
-    void pump();
-  });
-}
-
-async function pump(): Promise<void> {
-  if (pumping) return;
-  pumping = true;
-  try {
-    while (queue.length > 0) {
-      const job = queue.shift()!;
-      if (Date.now() - job.enqueuedAt > MAX_QUEUE_WAIT_MS) {
-        job.reject(new Error("faceBlock: request expired waiting in the inference queue"));
-        continue;
-      }
-      // Serialization guard: the caller is rejected at JOB_TIMEOUT_MS, but the
-      // queue stays locked until the underlying run() actually settles — ORT
-      // sessions and the landmarker must never overlap.
-      const work = job.run();
-      const settled = work.then(
-        () => undefined,
-        () => undefined,
-      );
-      try {
-        job.resolve(await withTimeout(work, JOB_TIMEOUT_MS, "inference job"));
-      } catch (e) {
-        job.reject(e);
-      }
-      await settled;
-    }
-  } finally {
-    pumping = false;
-  }
-}
-
-/* ---------- image fetch + decode ---------- */
-function checkImageType(type: string, what: string): void {
-  const t = type.split(";")[0]!.trim().toLowerCase();
-  if (t === "image/svg+xml") {
-    throw new Error(
-      `faceBlock: ${what} is SVG — refused because SVG can pull external resources`,
-    );
-  }
-  if (t && t !== "application/octet-stream" && !t.startsWith("image/")) {
-    throw new Error(`faceBlock: ${what} has unsupported media type "${t}"`);
-  }
-}
-
-/** Fetch image bytes with no credentials, an abort timeout, and a streamed 12 MiB cap. */
-async function fetchImageBytes(url: string, what: string): Promise<Blob> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        credentials: "omit",
-        redirect: "follow",
-        signal: ctrl.signal,
-      });
-    } catch (e) {
-      throw new Error(
-        `faceBlock: fetch of ${what} failed — ${ctrl.signal.aborted ? "timed out" : errText(e)}`,
-      );
-    }
-    if (!res.ok) {
-      throw new Error(`faceBlock: fetch of ${what} returned HTTP ${res.status}`);
-    }
-    checkImageType(res.headers.get("content-type") ?? "", what);
-    const declared = Number(res.headers.get("content-length") ?? 0);
-    if (declared > MAX_IMAGE_BYTES) {
-      throw new Error(
-        `faceBlock: ${what} is ${(declared / 1048576).toFixed(1)} MB — over the 12 MB limit`,
-      );
-    }
-    const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
-    if (!res.body) {
-      const blob = await res.blob();
-      if (blob.size > MAX_IMAGE_BYTES) {
-        throw new Error(`faceBlock: ${what} exceeds the 12 MB limit`);
-      }
-      return blob;
-    }
-    const reader = res.body.getReader();
-    const chunks: Uint8Array<ArrayBuffer>[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_IMAGE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error(`faceBlock: ${what} exceeds the 12 MB limit (streamed)`);
-      }
-      chunks.push(new Uint8Array(value));
-    }
-    return new Blob(chunks, { type: type || "application/octet-stream" });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
+/* ---------- image decode ---------- */
 function loadImage(url: string): Promise<HTMLImageElement> {
   return withTimeout(
     new Promise<HTMLImageElement>((resolve, reject) => {
@@ -283,7 +186,9 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Decode a Blob into an <img> via an object URL. Caller MUST call release()
+ * Decode a Blob into an <img> via an object URL. The post-decode pixel cap
+ * lives here so EVERY path — fetched photos, bundled references, sampled
+ * video frames — enforces the same 12 MP bound. Caller MUST call release()
  * on every path — it revokes the URL and drops the decoded bitmap reference.
  */
 async function decodeImage(
@@ -309,17 +214,22 @@ async function decodeImage(
     URL.revokeObjectURL(url);
     throw new Error(`faceBlock: ${what} is not a decodable image — ${errText(e)}`);
   }
-  if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (w === 0 || h === 0) {
     release();
     throw new Error(`faceBlock: ${what} decoded to an empty image`);
+  }
+  if (w * h > MAX_PIXELS) {
+    release();
+    throw new Error(
+      `faceBlock: ${what} is ${w}x${h} (${((w * h) / 1e6).toFixed(1)} MP) — over the 12 MP limit`,
+    );
   }
   return { img, release };
 }
 
 /* ---------- references ---------- */
-function normalizeName(s: string): string {
-  return s.trim().replace(/\s+/g, " ").toLowerCase();
-}
 
 async function loadReferences(): Promise<ReferencePerson[]> {
   const res = await fetch(extUrl("references.json"));
@@ -344,138 +254,163 @@ function findPerson(people: ReferencePerson[], name: string): ReferencePerson | 
 }
 
 /**
- * Embed exactly one face from one reference image. References with zero or
- * multiple faces are rejected — enrolling a face picked out of a group photo
- * would poison the identity.
- */
-/**
- * Detect faces for alignment.
- *
- * ONE detector on every path, deliberately. Enrolment and matching must agree
- * on landmark conventions: aligning enrolments with one model and queries with
- * another produces differently-cropped 112x112 chips and drops same-person
- * similarity below the match threshold (measured: masks fell from 9 to 6 while
- * detection rose).
+ * Detect faces for alignment. ONE detector on every path — see getYuNet.
  */
 async function detectForAlignment(img: HTMLImageElement): Promise<FaceDetection[]> {
   return detectFacesYuNet(await getYuNet(), img);
 }
 
-
-async function embedReference(
-  refPath: string,
+/**
+ * Embed one detected face. The raster covers exactly the region alignFace
+ * can read (alignmentSourceRect), so the chip is identical to aligning on
+ * the full image — verified by tests/cv/region-align.test.ts — while large
+ * photos never pay a full-frame getImageData.
+ */
+async function embedDetectedFace(
   embedder: Embedder,
+  img: HTMLImageElement,
+  det: FaceDetection,
 ): Promise<Float32Array> {
-  const url = /^https?:\/\//i.test(refPath) ? refPath : extUrl(refPath);
-  const blob = await fetchImageBytes(url, `reference "${refPath}"`);
-  const { img, release } = await decodeImage(blob, `reference "${refPath}"`);
-  try {
-    const dets = await detectForAlignment(img);
-    if (dets.length !== 1) {
-      throw new Error(
-        `faceBlock: reference "${refPath}" has ${dets.length} faces — ` +
-          `a reference must contain exactly one face`,
-      );
-    }
-    const raster = imageToRaster(img);
-    const embedding = await embedAligned(embedder, alignFace(raster, dets[0]!));
-    if (embedding.length === 0) {
-      throw new Error(`faceBlock: reference "${refPath}" produced an empty embedding`);
-    }
-    return embedding;
-  } finally {
-    release();
-  }
-}
-
-async function enroll(name: unknown): Promise<{ identity: SavedIdentity }> {
-  if (typeof name !== "string" || name.trim() === "") {
-    throw new Error('faceBlock: ENROLL requires a non-empty "name"');
-  }
-  const people = await loadReferences();
-  const person = findPerson(people, name);
-  if (!person) {
-    const known = people
-      .map((p) => `${p.name} (aliases: ${p.aliases?.join(", ") || "none"})`)
-      .join("; ");
-    throw new Error(
-      `faceBlock: no reference set matches "${name.trim()}". ` +
-        `Enrollable people: ${known || "none"}. ` +
-        `To block someone else, add them to extension/references.json first.`,
-    );
-  }
-  const embedder = await getEmbedder();
-  const embeddings: number[][] = [];
-  const sources: string[] = [];
-  const failures: string[] = [];
-  for (const ref of person.references ?? []) {
-    if (!ref || typeof ref.path !== "string") continue;
-    try {
-      const emb = await embedReference(ref.path, embedder);
-      embeddings.push(Array.from(emb));
-      if (typeof ref.source === "string") sources.push(ref.source);
-    } catch (e) {
-      failures.push(`${ref.path}: ${errText(e)}`);
-    }
-  }
-  if (embeddings.length === 0) {
-    throw new Error(
-      `faceBlock: could not enroll "${person.name}" — no usable reference image. ` +
-        failures.join(" | "),
-    );
-  }
-  return {
-    identity: {
-      id: person.id,
-      name: person.name,
-      embeddings,
-      threshold: MATCH_THRESHOLD,
-      sources,
-      createdAt: Date.now(),
-    },
+  const { raster, offsetX, offsetY } = imageToRasterRegion(
+    img,
+    alignmentSourceRect(det),
+    0,
+  );
+  const local: FaceDetection = {
+    ...det,
+    box: { ...det.box, x: det.box.x - offsetX, y: det.box.y - offsetY },
+    landmarks: det.landmarks?.map((pt) => ({ x: pt.x - offsetX, y: pt.y - offsetY })),
   };
+  return embedAligned(embedder, alignFace(raster, local));
 }
 
-/* ---------- self-seed resolve ---------- */
+/* ---------- enrollment preview ---------- */
 interface EmbeddedCandidate {
   candidate: CandidateImage;
   embedding: Float32Array;
 }
 
 /**
- * Fetch and embed one resolved candidate. Downloads the thumbnail when the
- * source offers one — Commons/Wikipedia originals routinely exceed the
- * 12 MP decode cap, while 640px is ample for a detector that aligns to
- * 112x112. Requires exactly one face for the same reason embedReference
- * does: a face picked out of a group photo would poison the identity.
+ * Download + decode one image off the model lane, then enqueue exactly one
+ * serialized detect+embed unit. Requires exactly one face: a face picked out
+ * of a group photo would poison the identity.
  */
-async function embedCandidate(
-  candidate: CandidateImage,
+async function prepareCandidate(
+  url: string,
+  what: string,
+): Promise<{ img: HTMLImageElement; release: () => void }> {
+  const blob = await networkPool.run(() => fetchImageBytes(url, what));
+  return decodeImage(blob, what);
+}
+
+async function detectAndEmbedOne(
+  img: HTMLImageElement,
   embedder: Embedder,
 ): Promise<Float32Array> {
-  const what = `candidate "${candidate.filename}"`;
-  const blob = await fetchImageBytes(candidate.thumbUrl ?? candidate.url, what);
-  const { img, release } = await decodeImage(blob, what);
-  try {
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    if (w * h > MAX_PIXELS) {
-      throw new Error(
-        `${((w * h) / 1e6).toFixed(1)} MP — over the 12 MP limit`,
-      );
-    }
-    const dets = await detectForAlignment(img);
-    if (dets.length !== 1) {
-      throw new Error(`${dets.length} faces`);
-    }
-    const embedding = await embedAligned(embedder, alignFace(imageToRaster(img), dets[0]!));
-    if (embedding.length === 0) {
-      throw new Error("empty embedding");
-    }
-    return embedding;
-  } finally {
-    release();
+  const dets = await detectForAlignment(img);
+  if (dets.length !== 1) {
+    throw new Error(`${dets.length} faces`);
   }
+  const embedding = await embedDetectedFace(embedder, img, dets[0]!);
+  if (embedding.length === 0) {
+    throw new Error("empty embedding");
+  }
+  return embedding;
+}
+
+/**
+ * Curated references.json hit: preview the bundled reference set under the
+ * person's canonical name/id. Fully local — no Wikimedia requests — and
+ * nothing is persisted; CONFIRM_ENROLL is the only write path.
+ */
+async function curatedPreview(
+  person: ReferencePerson,
+  embedder: Embedder,
+): Promise<EnrollPreview> {
+  const kept: EnrollPreviewFace[] = [];
+  const rejected: { url: string; reason: string }[] = [];
+  const refs = person.references ?? [];
+  let facesFound = 0;
+  await Promise.all(
+    refs.map(async (ref) => {
+      if (!ref || typeof ref.path !== "string") return;
+      const url = /^https?:\/\//i.test(ref.path) ? ref.path : extUrl(ref.path);
+      const what = `reference "${ref.path}"`;
+      // The whole unit — download, decode, inference, release — occupies one
+      // candidatePool slot, so resident decoded bitmaps stay bounded.
+      await candidatePool.run(async () => {
+        let img: HTMLImageElement;
+        let release: () => void;
+        try {
+          ({ img, release } = await prepareCandidate(url, what));
+        } catch (e) {
+          rejected.push({ url, reason: errText(e) });
+          return;
+        }
+        // `released` resolves when the inference job's cleanup actually ran —
+        // including on pre-run rejection or after a caller-facing timeout —
+        // so the pool slot stays held while the bitmap is still in use.
+        const released = Promise.withResolvers<void>();
+        try {
+          const embedding = await inferenceQueue.enqueue(
+            () => detectAndEmbedOne(img, embedder),
+            "inference",
+            () => {
+              try {
+                release();
+              } finally {
+                released.resolve();
+              }
+            },
+          );
+          facesFound++;
+          kept.push({
+            url,
+            thumbUrl: url,
+            filename: ref.path.split("/").pop() ?? ref.path,
+            source: typeof ref.source === "string" ? ref.source : "curated",
+            score: 1,
+            embedding: Array.from(embedding),
+          });
+        } catch (e) {
+          rejected.push({ url, reason: errText(e) });
+        } finally {
+          await released.promise;
+        }
+      });
+    }),
+  );
+  return {
+    name: person.name,
+    identityId: person.id,
+    candidatesTried: refs.length,
+    facesFound,
+    kept,
+    rejected,
+  };
+}
+
+/** At most this many RESOLVE_PREVIEW resolutions run concurrently. */
+const MAX_CONCURRENT_PREVIEWS = 2;
+let previewInFlight = 0;
+
+/**
+ * Bounded admission for the preview path: each resolution fans out into the
+ * network pool and the inference queue, so a flood of requests is rejected
+ * rather than stacked.
+ */
+async function resolvePreview(name: unknown): Promise<{ preview: EnrollPreview }> {
+  if (previewInFlight >= MAX_CONCURRENT_PREVIEWS) {
+    throw new Error("faceBlock: another enrollment preview is already in progress — try again shortly");
+  }
+  previewInFlight += 1;
+  // The caller-facing deadline wraps the work; admission and resource slots
+  // stay held until the work ACTUALLY settles — a timed-out preview may still
+  // hold candidate bitmaps while its inference jobs drain.
+  const work = buildPreview(name).finally(() => {
+    previewInFlight -= 1;
+  });
+  return await withTimeout(work, JOB_TIMEOUT_MS, "enrollment preview");
 }
 
 /**
@@ -483,13 +418,30 @@ async function embedCandidate(
  * return a diverse preview set for user confirmation. Nothing is persisted
  * here — embeddings stay in this document until CONFIRM_ENROLL.
  */
-async function resolvePreview(name: unknown): Promise<{ preview: EnrollPreview }> {
+async function buildPreview(name: unknown): Promise<{ preview: EnrollPreview }> {
   if (typeof name !== "string" || name.trim() === "") {
     throw new Error('faceBlock: RESOLVE_PREVIEW requires a non-empty "name"');
   }
   const trimmed = name.trim();
-  const { candidates } = await resolveCandidates(trimmed, { limit: MAX_RESOLVE_FETCH });
+  const embedder = await getEmbedder();
+
+  // Curated directory first: a references.json hit previews the bundled set
+  // under its canonical name/id and never touches the network beyond the
+  // bundled (or explicitly http(s)) reference files.
+  const person = findPerson(await loadReferences(), trimmed);
+  if (person) {
+    return { preview: await curatedPreview(person, embedder) };
+  }
+
+  const { candidates, timedOut } = await resolveCandidates(trimmed, { limit: MAX_RESOLVE_FETCH });
   const rejected: { url: string; reason: string }[] = [];
+  // Deadline honesty: a timed-out search is not proof that no photos exist.
+  if (timedOut) {
+    rejected.push({
+      url: "",
+      reason: "photo search hit its deadline — results below may be incomplete",
+    });
+  }
   if (candidates.length === 0) {
     return {
       preview: {
@@ -497,39 +449,75 @@ async function resolvePreview(name: unknown): Promise<{ preview: EnrollPreview }
         candidatesTried: 0,
         facesFound: 0,
         kept: [],
-        rejected: [
-          {
-            url: "",
-            reason:
-              `no candidate photos found for "${trimmed}" — ` +
-              `try the person's full name or a common alias`,
-          },
-        ],
+        rejected: timedOut
+          ? [
+              {
+                url: "",
+                reason:
+                  `photo search for "${trimmed}" timed out before all sources answered — ` +
+                  `try again, or use a more specific name`,
+              },
+            ]
+          : [
+              {
+                url: "",
+                reason:
+                  `no candidate photos found for "${trimmed}" — ` +
+                  `try the person's full name or a common alias`,
+              },
+            ],
       },
     };
   }
 
-  const embedder = await getEmbedder();
   const embedded: (EmbeddedCandidate | undefined)[] = [];
   let facesFound = 0;
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (;;) {
-      const i = next++;
-      if (i >= candidates.length) return;
-      const candidate = candidates[i]!;
-      try {
-        const embedding = await embedCandidate(candidate, embedder);
-        embedded[i] = { candidate, embedding };
-        facesFound++;
-      } catch (e) {
-        // A bad candidate must not abort the whole resolve.
-        rejected.push({ url: candidate.url, reason: errText(e) });
-      }
-    }
-  };
   await Promise.all(
-    Array.from({ length: Math.min(RESOLVE_FETCH_CONCURRENCY, candidates.length) }, () => worker()),
+    candidates.map(async (candidate, i) => {
+      const what = `candidate "${candidate.filename}"`;
+      // The whole unit — download, decode, inference, release — occupies one
+      // candidatePool slot, so resident decoded bitmaps stay bounded.
+      await candidatePool.run(async () => {
+        let img: HTMLImageElement;
+        let release: () => void;
+        try {
+          // Downloads prefer the thumbnail: Commons/Wikipedia originals
+          // routinely exceed the 12 MP decode cap, while 640px is ample for a
+          // detector that aligns to 112x112.
+          ({ img, release } = await prepareCandidate(
+            candidate.thumbUrl ?? candidate.url,
+            what,
+          ));
+        } catch (e) {
+          // A bad candidate must not abort the whole resolve.
+          rejected.push({ url: candidate.url, reason: errText(e) });
+          return;
+        }
+        // `released` resolves when the inference job's cleanup actually ran —
+        // including on pre-run rejection or after a caller-facing timeout —
+        // so the pool slot stays held while the bitmap is still in use.
+        const released = Promise.withResolvers<void>();
+        try {
+          const embedding = await inferenceQueue.enqueue(
+            () => detectAndEmbedOne(img, embedder),
+            "inference",
+            () => {
+              try {
+                release();
+              } finally {
+                released.resolve();
+              }
+            },
+          );
+          embedded[i] = { candidate, embedding };
+          facesFound++;
+        } catch (e) {
+          rejected.push({ url: candidate.url, reason: errText(e) });
+        } finally {
+          await released.promise;
+        }
+      });
+    }),
   );
 
   // Drop near-duplicates before clustering: Commons often hosts a portrait
@@ -586,60 +574,15 @@ async function resolvePreview(name: unknown): Promise<{ preview: EnrollPreview }
 }
 
 /**
- * Defensively validate the confirmed preview faces — they crossed a message
- * boundary — in the same spirit as toBlockedIdentities. Entries with a
- * malformed embedding are dropped rather than trusted.
- *
- * The width is NOT pinned to a constant: it is a property of whichever model
- * file is bundled (w600k_mbf emits 512-d, while the synthetic benchmark in
- * bench/ declares 128 for its own protocol). Pinning it to the benchmark's
- * EMBED_DIM silently rejected every real embedding. What must hold is that the
- * vectors are non-empty, finite, and mutually comparable — mixed widths cannot
- * be cosine-compared, so those are dropped.
+ * Turn the user's confirmed preview faces into a SavedIdentity. An explicit
+ * identityId is the refresh path — background has already verified it names
+ * a saved identity, and it is used verbatim. Otherwise the id is the
+ * canonical references.json id for curated names, else the name's slug.
  */
-function toPreviewFaces(raw: unknown): EnrollPreviewFace[] {
-  if (!Array.isArray(raw)) return [];
-  const out: EnrollPreviewFace[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const f = item as Partial<EnrollPreviewFace>;
-    const emb = f.embedding;
-    if (!Array.isArray(emb) || emb.length === 0 || !emb.every((v) => Number.isFinite(v))) {
-      continue;
-    }
-    const width = out[0]?.embedding.length ?? emb.length;
-    if (emb.length !== width) continue;
-    out.push({
-      url: typeof f.url === "string" ? f.url : "",
-      thumbUrl: typeof f.thumbUrl === "string" ? f.thumbUrl : undefined,
-      filename: typeof f.filename === "string" ? f.filename : "",
-      source: typeof f.source === "string" ? f.source : "",
-      score: typeof f.score === "number" && Number.isFinite(f.score) ? f.score : 0,
-      embedding: emb.slice(),
-    });
-  }
-  return out;
-}
-
-/**
- * Turn the user's confirmed preview faces into a SavedIdentity. The id is
- * derived from the name the same way references.json ids are written
- * (kebab-case slug), with a deterministic hash fallback for names that
- * slugify to nothing.
- */
-function identityId(name: string): string {
-  const slug = normalizeName(name)
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  if (slug) return slug;
-  let hash = 0;
-  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
-  return `person-${hash.toString(36)}`;
-}
-
 async function confirmEnroll(
   name: unknown,
   rawFaces: unknown,
+  explicitId: unknown,
 ): Promise<{ identity: SavedIdentity }> {
   if (typeof name !== "string" || name.trim() === "") {
     throw new Error('faceBlock: CONFIRM_ENROLL requires a non-empty "name"');
@@ -651,9 +594,16 @@ async function confirmEnroll(
     );
   }
   const trimmed = name.trim();
+  let id: string;
+  if (typeof explicitId === "string" && explicitId !== "") {
+    id = explicitId;
+  } else {
+    const person = findPerson(await loadReferences(), trimmed);
+    id = person?.id ?? identityId(trimmed);
+  }
   return {
     identity: {
-      id: identityId(trimmed),
+      id,
       name: trimmed,
       embeddings: faces.map((f) => f.embedding),
       threshold: MATCH_THRESHOLD,
@@ -664,30 +614,6 @@ async function confirmEnroll(
 }
 
 /* ---------- analyze ---------- */
-function toBlockedIdentities(raw: unknown): BlockedIdentity[] {
-  if (!Array.isArray(raw)) return [];
-  const out: BlockedIdentity[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const s = item as Partial<SavedIdentity>;
-    if (typeof s.id !== "string" || !Array.isArray(s.embeddings)) continue;
-    const embeddings = s.embeddings
-      .filter(
-        (e): e is number[] =>
-          Array.isArray(e) && e.length > 0 && e.every((v) => Number.isFinite(v)),
-      )
-      .map((e) => new Float32Array(e));
-    if (embeddings.length === 0) continue;
-    out.push({
-      id: s.id,
-      displayName: typeof s.name === "string" ? s.name : undefined,
-      embeddings,
-      threshold: Number.isFinite(s.threshold) ? (s.threshold as number) : MATCH_THRESHOLD,
-      createdAt: typeof s.createdAt === "number" ? s.createdAt : 0,
-    });
-  }
-  return out;
-}
 
 /** Grow a detection box by the configured scale around its center, clamped to the image. */
 function expandBox(box: Box, w: number, h: number): Box {
@@ -702,51 +628,131 @@ function expandBox(box: Box, w: number, h: number): Box {
   return { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
 }
 
-async function analyze(url: unknown, rawIdentities: unknown): Promise<{ result: ImageResult }> {
+/** Unthresholded best cosine over every gallery vector, for diagnostics. */
+function bestCosine(
+  embedding: Float32Array,
+  identities: readonly BlockedIdentity[],
+): { bestCosine: number | null; bestIdentityId: string | null } {
+  let best: number | null = null;
+  let bestId: string | null = null;
+  for (const identity of identities) {
+    const gallery =
+      identity.prototypes && identity.prototypes.length > 0
+        ? identity.prototypes
+        : identity.embeddings;
+    for (const g of gallery) {
+      const s = cosineNormalized(embedding, g);
+      if (best === null || s > best) {
+        best = s;
+        bestId = identity.id;
+      }
+    }
+  }
+  return { bestCosine: best, bestIdentityId: bestId };
+}
+
+interface AnalysisOutcome {
+  regions: { x: number; y: number; width: number; height: number; confidence: number; identityId: string }[];
+  dets: FaceDetection[];
+  diagFaces: FaceDiagnostics["faces"];
+  droppedIdentities: number;
+  degradedIdentities: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The serialized inference unit shared by ANALYZE and ANALYZE_FRAME:
+ * detect, embed each face, match. Diagnostics are computed only for
+ * extension-page senders and carry numbers, never embeddings.
+ */
+async function analyzeDecoded(
+  img: HTMLImageElement,
+  rawIdentities: unknown,
+  wantDiagnostics: boolean,
+): Promise<AnalysisOutcome> {
+  const { identities, droppedIdentities, degradedIdentities } = toBlockedIdentities(rawIdentities);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const dets = await detectForAlignment(img);
+  const regions: AnalysisOutcome["regions"] = [];
+  const diagFaces: FaceDiagnostics["faces"] = [];
+  if (dets.length > 0 && identities.length > 0) {
+    const embedder = await getEmbedder();
+    for (const det of dets) {
+      const embedding = await embedDetectedFace(embedder, img, det);
+      const match = matchFace(embedding, identities, { minAgreements: MIN_AGREEMENTS });
+      if (match) {
+        regions.push({
+          ...expandBox(det.box, w, h),
+          confidence: match.score,
+          identityId: match.identityId,
+        });
+      }
+      if (wantDiagnostics) {
+        const best = bestCosine(embedding, identities);
+        diagFaces.push({
+          box: { ...det.box },
+          bestCosine: best.bestCosine,
+          bestIdentityId: best.bestIdentityId,
+          matched: match !== null,
+          matchedIdentityId: match?.identityId ?? null,
+        });
+      }
+    }
+  } else if (wantDiagnostics) {
+    // No gallery to score against: report the detections with null cosines
+    // rather than paying for embeddings that cannot match anything.
+    for (const det of dets) {
+      diagFaces.push({
+        box: { ...det.box },
+        bestCosine: null,
+        bestIdentityId: null,
+        matched: false,
+        matchedIdentityId: null,
+      });
+    }
+  }
+  return { regions, dets, diagFaces, droppedIdentities, degradedIdentities, width: w, height: h };
+}
+
+function makeDiagnostics(outcome: AnalysisOutcome): FaceDiagnostics {
+  return {
+    faceCount: outcome.dets.length,
+    threshold: MATCH_THRESHOLD,
+    minAgreements: MIN_AGREEMENTS,
+    droppedIdentities: outcome.droppedIdentities,
+    degradedIdentities: outcome.degradedIdentities,
+    faces: outcome.diagFaces,
+  };
+}
+
+async function analyze(
+  url: unknown,
+  rawIdentities: unknown,
+  wantDiagnostics: boolean,
+): Promise<{ result: ImageResult }> {
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
     throw new Error('faceBlock: ANALYZE requires an http(s) "url"');
   }
-  const identities = toBlockedIdentities(rawIdentities);
-  const blob = await fetchImageBytes(url, `image "${url}"`);
-  const { img, release } = await decodeImage(blob, `image "${url}"`);
-  try {
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    if (w * h > MAX_PIXELS) {
-      throw new Error(
-        `faceBlock: image is ${w}x${h} (${((w * h) / 1e6).toFixed(1)} MP) — over the 12 MP limit`,
-      );
-    }
-    // YuNet detects; the landmarker is kept only as a fallback so a model
-    // failure degrades to the old behaviour instead of masking nothing.
-    // Same detector as enrolment, so alignment conventions match.
-    const dets = await detectForAlignment(img);
-    const regions: ImageResult["regions"] = [];
-    if (dets.length > 0 && identities.length > 0) {
-      const embedder = await getEmbedder();
-      for (const det of dets) {
-        // Crop to the face: alignment needs a 112px chip, not a 23 MB bitmap.
-        const { raster, offsetX, offsetY } = imageToRasterRegion(img, det.box);
-        const local: FaceDetection = {
-          ...det,
-          box: { ...det.box, x: det.box.x - offsetX, y: det.box.y - offsetY },
-          landmarks: det.landmarks?.map((pt) => ({ x: pt.x - offsetX, y: pt.y - offsetY })),
-        };
-        const embedding = await embedAligned(embedder, alignFace(raster, local));
-        const match = matchFace(embedding, identities, { minAgreements: 1 });
-        if (match) {
-          regions.push({
-            ...expandBox(det.box, w, h),
-            confidence: match.score,
-            identityId: match.identityId,
-          });
-        }
-      }
-    }
-    return { result: { width: w, height: h, faceCount: dets.length, regions } };
-  } finally {
-    release();
-  }
+  // Download + decode on the network lane; only detect+embed holds the
+  // serialized model lane.
+  const { img, release } = await prepareCandidate(url, `image "${url}"`);
+  // release is the job's cleanup: it fires after the inference unit actually
+  // settles, never while the model is still reading pixels.
+  const outcome = await inferenceQueue.enqueue(
+    () => analyzeDecoded(img, rawIdentities, wantDiagnostics),
+    "inference",
+    release,
+  );
+  const result: ImageResult = {
+    width: outcome.width,
+    height: outcome.height,
+    faceCount: outcome.dets.length,
+    regions: outcome.regions,
+  };
+  if (wantDiagnostics) result.diagnostics = makeDiagnostics(outcome);
+  return { result };
 }
 
 /**
@@ -759,71 +765,58 @@ async function analyze(url: unknown, rawIdentities: unknown): Promise<{ result: 
 async function analyzeFrame(
   jpegBase64: unknown,
   rawIdentities: unknown,
+  wantDiagnostics: boolean,
 ): Promise<{ result: FrameResult }> {
   // The frame arrives base64-encoded: runtime.sendMessage JSON-serializes its
-  // payload, so raw bytes would be lost in transit.
-  const b64 = typeof jpegBase64 === "string" ? jpegBase64 : "";
-  let bytes: Uint8Array<ArrayBuffer> | null = null;
-  if (b64.length > 0) {
-    try {
-      const binary = atob(b64);
-      const out = new Uint8Array(new ArrayBuffer(binary.length));
-      for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-      bytes = out;
-    } catch {
-      bytes = null;
-    }
-  }
+  // payload, so raw bytes would be lost in transit. The string is capped
+  // BEFORE decoding so an oversized payload never becomes a decoded blob.
+  const bytes = base64ToBytes(jpegBase64);
   if (!bytes || bytes.length === 0) {
-    throw new Error('faceBlock: ANALYZE_FRAME requires a non-empty "jpegBase64" string');
+    throw new Error(
+      'faceBlock: ANALYZE_FRAME requires a non-empty "jpegBase64" string within the 12 MB cap',
+    );
   }
-  const identities = toBlockedIdentities(rawIdentities);
   const { img, release } = await decodeImage(
     new Blob([bytes], { type: "image/jpeg" }),
     "video frame",
   );
-  try {
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    if (w * h > MAX_PIXELS) {
-      throw new Error(
-        `faceBlock: video frame is ${w}x${h} (${((w * h) / 1e6).toFixed(1)} MP) — over the 12 MP limit`,
-      );
-    }
-    const dets: FaceDetection[] = await detectForAlignment(img);
-    const regions: FrameResult["regions"] = [];
-    if (dets.length > 0 && identities.length > 0) {
-      const embedder = await getEmbedder();
-      for (const det of dets) {
-        // Crop to the face: alignment needs a 112px chip, not a 23 MB bitmap.
-        const { raster, offsetX, offsetY } = imageToRasterRegion(img, det.box);
-        const local: FaceDetection = {
-          ...det,
-          box: { ...det.box, x: det.box.x - offsetX, y: det.box.y - offsetY },
-          landmarks: det.landmarks?.map((pt) => ({ x: pt.x - offsetX, y: pt.y - offsetY })),
-        };
-        const embedding = await embedAligned(embedder, alignFace(raster, local));
-        const match = matchFace(embedding, identities, { minAgreements: 1 });
-        if (match) {
-          regions.push({
-            ...expandBox(det.box, w, h),
-            confidence: match.score,
-            identityId: match.identityId,
-          });
-        }
-      }
-    }
-    return { result: { width: w, height: h, regions } };
-  } finally {
-    release();
-  }
+  // release is the job's cleanup: it fires after the frame's inference unit
+  // actually settles, never while the model is still reading pixels.
+  const outcome = await inferenceQueue.enqueue(
+    () => analyzeDecoded(img, rawIdentities, wantDiagnostics),
+    "frame",
+    release,
+  );
+  const result: FrameResult = {
+    width: outcome.width,
+    height: outcome.height,
+    regions: outcome.regions,
+  };
+  if (wantDiagnostics) result.diagnostics = makeDiagnostics(outcome);
+  return { result };
 }
-
-/* ---------- message entrypoint ---------- */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Only same-extension internal callers (background service worker, options
-  // page). Reject content scripts (sender.tab set) and anything external.
-  if (sender.id !== chrome.runtime.id || sender.tab) return false;
+  // Only same-extension callers: the background service worker and extension
+  // pages. Authenticate on the sender URL's origin — extension pages opened
+  // in tabs still carry sender.tab, so the tab check would reject them,
+  // while a content script's sender.url is the web page it runs on.
+  let senderUrl: URL | null = null;
+  try {
+    senderUrl = typeof sender.url === "string" ? new URL(sender.url) : null;
+  } catch {
+    senderUrl = null;
+  }
+  const fromExtension =
+    sender.id === chrome.runtime.id &&
+    // The service worker has no tab; an extension page in a tab carries a
+    // chrome-extension sender.url; a content script's sender.url is the web
+    // page it runs on, so it fails both halves.
+    (!sender.tab ||
+      (senderUrl !== null &&
+        senderUrl.protocol === "chrome-extension:" &&
+        senderUrl.host === chrome.runtime.id));
+  if (!fromExtension) return false;
+
   if (!message || typeof message !== "object") return false;
   const m = message as {
     target?: string;
@@ -833,24 +826,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     jpegBase64?: string;
     identities?: SavedIdentity[];
     faces?: EnrollPreviewFace[];
+    identityId?: string;
   };
   if (m.target !== "offscreen") return false;
+  // Diagnostics are attached only for direct extension-PAGE senders (the
+  // options/verify pages end in .html). The background service worker's
+  // forwards never get them, so nothing diagnostic reaches content scripts.
+  const wantDiagnostics = senderUrl !== null && senderUrl.pathname.endsWith(".html");
   let work: Promise<
     | { identity: SavedIdentity }
     | { result: ImageResult }
     | { result: FrameResult }
     | { preview: EnrollPreview }
   >;
-  if (m.type === "ENROLL") {
-    work = enqueue(() => enroll(m.name));
-  } else if (m.type === "ANALYZE") {
-    work = enqueue(() => analyze(m.url, m.identities));
+  if (m.type === "ANALYZE") {
+    work = analyze(m.url, m.identities, wantDiagnostics);
   } else if (m.type === "ANALYZE_FRAME") {
-    work = enqueue(() => analyzeFrame(m.jpegBase64, m.identities));
+    work = analyzeFrame(m.jpegBase64, m.identities, wantDiagnostics);
   } else if (m.type === "RESOLVE_PREVIEW") {
-    work = enqueue(() => resolvePreview(m.name));
+    work = resolvePreview(m.name);
   } else if (m.type === "CONFIRM_ENROLL") {
-    work = enqueue(() => confirmEnroll(m.name, m.faces));
+    work = confirmEnroll(m.name, m.faces, m.identityId);
   } else {
     sendResponse({
       ok: false,

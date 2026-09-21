@@ -257,3 +257,30 @@ describe("applyDetections", () => {
     expect(next[0]!.box).not.toBe(tracks[0]!.box);
   });
 });
+
+describe("applyDetections maxAgeMs", () => {
+  test("a track older than the bound is dropped before association", () => {
+    // The old track sits exactly where the detection lands; without the age
+    // gate it would steal the detection and inherit a huge bogus velocity.
+    const stale: Track = { box: box(0, 0, 10, 10), vx: 0, vy: 0, lastSeenMs: 0, misses: 0 };
+    const next = applyDetections([stale], [box(0, 0, 10, 10)], 5000, { maxAgeMs: 2000 });
+    expect(next).toHaveLength(1);
+    // It is a NEW track: lastSeenMs is now, not carried over from the stale one.
+    expect(next[0]!.lastSeenMs).toBe(5000);
+    expect(next[0]!.vx).toBe(0);
+  });
+
+  test("a track exactly at the bound survives", () => {
+    const t = createTrack(box(0, 0, 10, 10), 0);
+    const next = applyDetections([t], [box(0, 0, 10, 10)], 2000, { maxAgeMs: 2000 });
+    expect(next).toHaveLength(1);
+    expect(next[0]!.misses).toBe(0);
+  });
+
+  test("omitting maxAgeMs keeps pure miss-count lifetime", () => {
+    const ancient: Track = { box: box(0, 0, 10, 10), vx: 0, vy: 0, lastSeenMs: 0, misses: 0 };
+    const next = applyDetections([ancient], [], 1e9);
+    expect(next).toHaveLength(1);
+    expect(next[0]!.misses).toBe(1);
+  });
+});

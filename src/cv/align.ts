@@ -124,6 +124,83 @@ export function warpSimilarityRgb(
   }
   return out;
 }
+/**
+ * The source-image rectangle alignFace actually reads for a detection.
+ *
+ * With >=5 landmarks the warp inverse-maps every destination texel of the
+ * outSize square back into the source; each sampled source point then reads
+ * texels floor(s)..floor(s)+1. The footprint is therefore the bounding box
+ * of the inverse-mapped destination corners expanded by ONE SOURCE PIXEL —
+ * a margin in destination space would be too small when the transform
+ * upscales a small face (measured: a 0.05-scale face diverged by >100 per
+ * channel with a dest-space margin).
+ *
+ * Without landmarks the fallback reads only the detection box expanded 20%
+ * about its center.
+ *
+ * Rasterising exactly this rect (clamped to the image) and offsetting the
+ * detection by the rect's origin produces the same aligned chip as running
+ * alignFace on the full raster — every texel the warp can sample is inside
+ * the region, and out-of-image texels are zero in both cases.
+ */
+export function alignmentSourceRect(
+  detection: FaceDetection,
+  outSize = ALIGN_SIZE,
+): { x: number; y: number; width: number; height: number } {
+  const landmarks = detection.landmarks;
+  if (landmarks !== undefined && landmarks.length >= 5) {
+    const scale = outSize / 112;
+    const dst = CANONICAL_5.map((p) => ({ x: p.x * scale, y: p.y * scale }));
+    const t = estimateSimilarity(landmarks.slice(0, 5), dst);
+    const det = t.a * t.a + t.b * t.b;
+    if (det === 0) {
+      // Degenerate transform: the warp emits zeros, so the footprint is empty.
+      return { x: 0, y: 0, width: 0, height: 0 };
+    }
+    const ia = t.a / det;
+    const ib = -t.b / det;
+    const itx = -(ia * t.tx - ib * t.ty);
+    const ity = -(ib * t.tx + ia * t.ty);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    // Map the actual destination texel range [0, outSize-1], then widen by
+    // one SOURCE texel on each side: the bilinear taps read floor(s) and
+    // floor(s)+1, and the extra pixel also absorbs float32 rounding.
+    for (const dy of [0, outSize - 1]) {
+      for (const dx of [0, outSize - 1]) {
+        const sx = ia * dx - ib * dy + itx;
+        const sy = ib * dx + ia * dy + ity;
+        if (sx < minX) minX = sx;
+        if (sx > maxX) maxX = sx;
+        if (sy < minY) minY = sy;
+        if (sy > maxY) maxY = sy;
+      }
+    }
+    const x0 = Math.floor(minX) - 1;
+    const y0 = Math.floor(minY) - 1;
+    return {
+      x: x0,
+      y: y0,
+      width: Math.floor(maxX) + 3 - x0,
+      height: Math.floor(maxY) + 3 - y0,
+    };
+  }
+
+  const { box } = detection;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const ew = box.width * 1.2;
+  const eh = box.height * 1.2;
+  return {
+    x: Math.floor(cx - ew / 2),
+    y: Math.floor(cy - eh / 2),
+    width: Math.ceil(cx + ew / 2) - Math.floor(cx - ew / 2),
+    height: Math.ceil(cy + eh / 2) - Math.floor(cy - eh / 2),
+  };
+}
+
 
 /**
  * Align a detected face to outSize x outSize HWC RGB floats.

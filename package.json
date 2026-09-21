@@ -1,15 +1,18 @@
 {
   "name": "faceblock",
   "version": "0.1.0",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "bun test tests",
     "dev": "bun scripts/serve-demo.ts",
     "typecheck": "tsc --noEmit",
+    "verify:assets": "bun scripts/verify-assets.ts",
+    "verify:browser": "bun scripts/verify-browser.ts",
     "build:extension": "bun scripts/build-extension.ts",
-    "package": "bun scripts/package-extension.ts"
+    "package": "bun scripts/package-extension.ts",
+    "check": "bun test tests && bun run typecheck && bun run verify:assets"
   },
   "dependencies": {
     "onnxruntime-web": "^1.30.0"

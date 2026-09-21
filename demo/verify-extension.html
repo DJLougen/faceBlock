@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FaceBlock verify fixture</title>
+<style>
+  body{font:15px system-ui;max-width:1200px;margin:32px auto;padding:0 24px;background:#11151b;color:#edf1f5}
+  .grid{display:flex;flex-wrap:wrap;gap:20px}
+  figure{margin:0;width:220px}
+  img,video{display:block;width:220px;height:220px;object-fit:cover;border-radius:6px;background:#000}
+  figcaption{padding:6px 0;font-size:12px;color:#b9c4d0}
+  img.tiny{width:20px;height:20px}
+</style>
+</head>
+<body>
+<h1>FaceBlock verification fixture</h1>
+<p>Deterministic local media for <code>scripts/verify-browser.ts</code>. Every asset is a bundled
+   sample served by the fixture server. Cross-origin cases are mounted only when the harness
+   passes their URLs (<code>?crossImg=…&amp;crossVid=…</code>), so the page is self-contained
+   on a single fixture origin.</p>
+<div class="grid">
+  <figure><img id="img-theo" src="/samples/theo.jpg" alt="theo"><figcaption>theo — enrolled reference (self-match)</figcaption></figure>
+  <figure><img id="img-dwarkesh" src="/samples/dwarkesh.jpg" alt="dwarkesh"><figcaption>dwarkesh — enrolled reference (self-match)</figcaption></figure>
+  <figure><img id="img-control" src="/samples/unrelated.jpg" alt="control"><figcaption>control — never enrolled</figcaption></figure>
+  <figure><img id="img-theo-dup" src="/samples/theo.jpg" alt="dup"><figcaption>duplicate src — same-URL cache path</figcaption></figure>
+  <figure><picture><source srcset="/samples/theo.jpg"><img id="img-picture" src="/samples/unrelated.jpg" alt="picture"></picture><figcaption>picture/source — currentSrc resolves to theo</figcaption></figure>
+  <figure><img id="img-late" alt="late"><figcaption>late src — set 1.5s after load</figcaption></figure>
+  <figure><img id="img-swap" src="/samples/unrelated.jpg" alt="swap"><figcaption>src swap — harness flips to theo after first pass</figcaption></figure>
+  <figure><img id="img-small" class="tiny" src="/samples/theo.jpg" alt="tiny"><figcaption>20px — below MIN_MEDIA_PX, never analysed</figcaption></figure>
+  <figure><video id="vid-main" src="/video-theo.mp4" autoplay muted loop playsinline></video><figcaption>video — same identity, different artifact</figcaption></figure>
+  <figure><video id="vid-late" autoplay muted loop playsinline></video><figcaption>late video src — set 4s after load</figcaption></figure>
+</div>
+<script type="module">
+  const q = new URLSearchParams(location.search);
+  const grid = document.querySelector(".grid");
+
+  setTimeout(() => {
+    document.getElementById("img-late").src = "/samples/theo.jpg";
+  }, 1500);
+  setTimeout(() => {
+    const v = document.getElementById("vid-late");
+    v.src = "/video-theo.mp4";
+    v.load();
+  }, 4000);
+
+  // Cross-origin media is opt-in: the harness probes the second origin first
+  // and only passes these params when it actually serves the asset.
+  const crossImg = q.get("crossImg");
+  if (crossImg) {
+    const fig = document.createElement("figure");
+    const img = document.createElement("img");
+    img.id = "img-cross";
+    img.src = crossImg;
+    const cap = document.createElement("figcaption");
+    cap.textContent = "cross-origin image — extension-side fetch must still mask";
+    fig.append(img, cap);
+    grid.append(fig);
+  }
+  const crossVid = q.get("crossVid");
+  if (crossVid) {
+    // vid-cross: permanently tainted — must report unanalyzable and stop.
+    const fig = document.createElement("figure");
+    const video = document.createElement("video");
+    video.id = "vid-cross";
+    video.autoplay = true;
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.src = crossVid;
+    const cap = document.createElement("figcaption");
+    cap.textContent = "cross-origin video without CORS — must report unanalyzable and stop";
+    fig.append(video, cap);
+    grid.append(fig);
+
+    // vid-cors-recover: same element starts cross-origin; the harness later
+    // re-points src at the same-origin video — the recovery scenario.
+    const fig2 = document.createElement("figure");
+    const v2 = document.createElement("video");
+    v2.id = "vid-cors-recover";
+    v2.autoplay = true;
+    v2.muted = true;
+    v2.loop = true;
+    v2.playsInline = true;
+    v2.src = crossVid;
+    const cap2 = document.createElement("figcaption");
+    cap2.textContent = "cross-origin first, harness re-points src to same-origin — must recover";
+    fig2.append(v2, cap2);
+    grid.append(fig2);
+  }
+</script>
+</body>
+</html>

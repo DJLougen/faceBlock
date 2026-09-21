@@ -211,6 +211,9 @@ button.remove:hover {
   border-radius: 6px;
   background: var(--bg);
   cursor: pointer;
+  /* The tile is a <label> wrapping its checkbox: clicking anywhere toggles it,
+     so keep stray clicks from selecting the caption text. */
+  user-select: none;
 }
 
 .face-tile:focus {
@@ -296,6 +299,13 @@ button.secondary {
 
 button.secondary:hover {
   border-color: var(--accent);
+}
+
+/* Per-identity actions sit side by side under the name. */
+.identity-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* Onboarding copy and footer: added for first-time users, appended so the

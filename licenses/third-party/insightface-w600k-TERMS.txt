@@ -1,0 +1,24 @@
+InsightFace pretrained model weights — terms of use
+====================================================
+
+Bundled file: models/w600k_mbf.onnx (MobileFaceNet recognition weights,
+distributed upstream inside buffalo_sc.zip).
+
+Source (pinned): https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
+Terms source (pinned): https://github.com/deepinsight/insightface/blob/v0.7/README.md
+
+THIS FILE CARRIES NO LICENSE GRANT FROM THIS PROJECT. The upstream project's
+"License" section at the pinned tag states, verbatim:
+
+    The code of InsightFace is released under the MIT License. There is no limitation for both academic and commercial usage.
+
+    The training data containing the annotation (and the models trained with these data) are available for non-commercial research purposes only.
+
+    Both manual-downloading models from our github repo and auto-downloading models with our [python-library](python-package) follow the above license policy(which is for non-commercial research purposes only).
+
+The MIT license applies to InsightFace's source code only. The pretrained
+weights bundled here are RESTRICTED to non-commercial research purposes. They
+are not covered by this project's AGPL license, and no broader permission is
+asserted or implied. Any use outside non-commercial research requires replacing
+this file with differently-licensed weights or obtaining appropriate rights
+from the upstream authors.

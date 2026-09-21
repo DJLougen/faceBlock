@@ -2,19 +2,27 @@
  * FaceBlock service worker.
  *
  * Owns the chrome.storage.local blocklist (`faceblockState`), serializes every
- * storage mutation through one write chain, brokers ENROLL/ANALYZE work to a
- * singleton offscreen inference document, and broadcasts revision changes to
- * content scripts. Images, names, and embeddings never leave the extension.
+ * storage mutation through one write chain, brokers ANALYZE/RESOLVE_PREVIEW/
+ * CONFIRM_ENROLL work to a singleton offscreen inference document, and
+ * broadcasts revision changes to content scripts. Images, names, and
+ * embeddings never leave the extension.
  *
  * Message contract (see protocol.ts):
- *   UI      -> {target:'background', type:'GET_STATE'|'BLOCK_NAME'|'REMOVE'|'SET_ENABLED'}
+ *   UI      -> {target:'background', type:'GET_STATE'|'BLOCK_NAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL'|'REMOVE'|'SET_ENABLED'}
  *   Content -> {target:'background', type:'PROCESS_IMAGE', url}
  *   Content -> {target:'background', type:'ANALYZE_FRAME', jpegBase64}
- *   Worker  -> {target:'offscreen',  type:'ENROLL'|'ANALYZE'|'ANALYZE_FRAME', name?, url?, jpegBase64?, identities?}
+ *   Worker  -> {target:'offscreen',  type:'ANALYZE'|'ANALYZE_FRAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL', name?, url?, jpegBase64?, identities?, faces?, identityId?}
  *   Worker  -> {target:'content',   type:'STATE_CHANGED', revision, enabled}
+ *
+ * Enrollment never persists on preview: RESOLVE_PREVIEW (and its legacy
+ * alias BLOCK_NAME) only gathers faces; CONFIRM_ENROLL is the sole write
+ * path, and an explicit identityId must name an existing saved identity.
  */
 
 import type { BlockList, EnrollPreview, FrameResult, ImageResult, SavedIdentity } from "./protocol.ts";
+import { mergeConfirmedIdentity, selectPreviewIdentityId } from "./enroll.ts";
+
+
 
 /* ---- minimal chrome typings (extension/ is outside the tsconfig project) ---- */
 
@@ -246,26 +254,48 @@ function cacheResult(key: string, result: ImageResult): void {
 
 /* ---- handlers ---- */
 
-async function enroll(name: string): Promise<Record<string, unknown>> {
+/**
+ * Shared preview path for RESOLVE_PREVIEW and its legacy alias BLOCK_NAME.
+ * Never persists: the offscreen document gathers and embeds candidate faces
+ * and returns a preview; only CONFIRM_ENROLL writes storage.
+ *
+ * `identityId` handling: an explicit id must name an existing saved identity
+ * (the refresh path) — anything else fails closed. Otherwise the preview
+ * targets an existing identity when the canonical or typed name resolves to
+ * one, so confirming replaces rather than duplicates.
+ */
+async function resolvePreview(
+  message: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const name = typeof message.name === "string" ? message.name.trim() : "";
+  if (!name) return { ok: false, error: "Enter a name to block." };
+  const explicitId =
+    typeof message.identityId === "string" && message.identityId !== ""
+      ? message.identityId
+      : null;
   const state = await loadState();
-  const existing = state.identities.find((i) => i.name.toLowerCase() === name.toLowerCase());
-  if (existing) {
-    return { ok: true, state, identity: existing };
+  if (explicitId && !state.identities.some((i) => i.id === explicitId)) {
+    return { ok: false, error: `No saved identity has id "${explicitId}".` };
   }
-  const response = await sendToOffscreen({ type: "ENROLL", name });
-  if (!response.ok || !response.identity) {
-    return { ok: false, error: response.error ?? "Enrollment failed." };
+  // Long-running: gathers candidates, downloads them, and runs inference.
+  const response = await sendToOffscreen({ type: "RESOLVE_PREVIEW", name });
+  if (!response.ok || !response.preview) {
+    return { ok: false, error: response.error ?? "Could not gather reference photos." };
   }
-  const identity = response.identity;
-  const next = await mutate((s) => {
-    // Dedupe on the canonical id the offscreen document returns: aliases and
-    // casing differences resolve to the same identity and must not duplicate.
-    if (s.identities.some((i) => i.id === identity.id)) return s;
-    return commit({ ...s, identities: [...s.identities, identity] });
+  const preview = response.preview;
+  const target = selectPreviewIdentityId(state, {
+    explicitId,
+    canonicalId: preview.identityId ?? null,
+    name: preview.name || name,
   });
-  return { ok: true, state: next, identity };
+  if (target.error) return { ok: false, error: target.error };
+  if (target.identityId) {
+    preview.identityId = target.identityId;
+  } else {
+    delete preview.identityId;
+  }
+  return { ok: true, preview };
 }
-
 async function processImage(
   message: Record<string, unknown>,
   sender: ChromeSender,
@@ -375,11 +405,13 @@ async function handleMessage(
       // so the UI stays responsive during long inference.
       return { ok: true, state: await loadState() };
 
-    case "BLOCK_NAME": {
+    case "BLOCK_NAME":
+    // Self-seed enrollment. Both routes carry embeddings in the response, so
+    // they are extension-pages-only. BLOCK_NAME is the legacy alias of
+    // RESOLVE_PREVIEW: it returns a preview and never persists.
+    case "RESOLVE_PREVIEW": {
       if (fromContent) return { ok: false, error: "Extension pages only." };
-      const name = typeof message.name === "string" ? message.name.trim() : "";
-      if (!name) return { ok: false, error: "Enter a name to block." };
-      return enroll(name);
+      return resolvePreview(message);
     }
 
     case "REMOVE": {
@@ -406,19 +438,7 @@ async function handleMessage(
     case "ANALYZE_FRAME":
       return processFrame(message, sender);
 
-    // Self-seed enrollment. Both routes carry embeddings in the response, so
-    // they are extension-pages-only for the same reason BLOCK_NAME is.
-    case "RESOLVE_PREVIEW": {
-      if (fromContent) return { ok: false, error: "Extension pages only." };
-      const name = typeof message.name === "string" ? message.name.trim() : "";
-      if (!name) return { ok: false, error: "Enter a name to block." };
-      // Long-running: gathers candidates, downloads them, and runs inference.
-      const response = await sendToOffscreen({ type: "RESOLVE_PREVIEW", name });
-      if (!response.ok || !response.preview) {
-        return { ok: false, error: response.error ?? "Could not gather reference photos." };
-      }
-      return { ok: true, preview: response.preview };
-    }
+
 
     case "CONFIRM_ENROLL": {
       if (fromContent) return { ok: false, error: "Extension pages only." };
@@ -428,16 +448,39 @@ async function handleMessage(
       if (faces.length === 0) {
         return { ok: false, error: "Keep at least one reference face." };
       }
-      const response = await sendToOffscreen({ type: "CONFIRM_ENROLL", name, faces });
+      const explicitId =
+        typeof message.identityId === "string" && message.identityId !== ""
+          ? message.identityId
+          : null;
+      // Fail closed before the offscreen round-trip: an explicit identityId
+      // is the refresh path and must name a saved identity.
+      if (explicitId) {
+        const state = await loadState();
+        if (!state.identities.some((i) => i.id === explicitId)) {
+          return { ok: false, error: `No saved identity has id "${explicitId}".` };
+        }
+      }
+      const response = await sendToOffscreen({
+        type: "CONFIRM_ENROLL",
+        name,
+        faces,
+        ...(explicitId ? { identityId: explicitId } : {}),
+      });
       if (!response.ok || !response.identity) {
         return { ok: false, error: response.error ?? "Enrollment failed." };
       }
       const identity = response.identity;
       const next = await mutate((s) => {
-        // Re-running for the same person replaces their references rather than
-        // silently keeping stale ones — gathering again is how a thin set improves.
-        const without = s.identities.filter((i) => i.id !== identity.id);
-        return commit({ ...s, identities: [...without, identity] });
+        // Revalidate inside the serialized write: a second page may have
+        // REMOVED the identity while the confirmation was in flight, and a
+        // late refresh must not resurrect it.
+        if (explicitId && !s.identities.some((i) => i.id === explicitId)) {
+          throw new Error(`No saved identity has id "${explicitId}".`);
+        }
+        // Re-running for the same person replaces their references rather
+        // than silently keeping stale ones; merge preserves the existing id,
+        // stored threshold, and createdAt.
+        return commit(mergeConfirmedIdentity(s, identity));
       });
       return { ok: true, state: next, identity };
     }

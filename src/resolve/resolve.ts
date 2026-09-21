@@ -59,8 +59,65 @@ export interface ResolveOptions {
   fetchImpl?: typeof fetch;
   /** Attempts per request including the first. Default 3. Tests use 1. */
   retryAttempts?: number;
+  /** Per-request ceiling in ms covering head AND body. Default 15s. */
+  requestTimeoutMs?: number;
+  /**
+   * Overall resolution deadline in ms. Default 90s. Expiry is terminal for
+   * new work but NOT an error: whatever candidates were already gathered are
+   * returned. A caller abort via `signal` IS an error and rejects.
+   */
+  overallDeadlineMs?: number;
   signal?: AbortSignal;
 }
+
+/**
+ * Terminal abort for resolution. `kind` distinguishes a caller-initiated
+ * abort (rejects resolveCandidates) from the internal overall deadline
+ * (returns whatever was gathered). Named AbortError so generic abort
+ * handling recognises it.
+ */
+export class ResolveAbortError extends Error {
+  readonly kind: "caller" | "deadline";
+  constructor(kind: "caller" | "deadline") {
+    super(
+      kind === "caller"
+        ? "faceBlock: resolve aborted by caller"
+        : "faceBlock: resolve exceeded its overall deadline",
+    );
+    this.name = "AbortError";
+    this.kind = kind;
+  }
+}
+
+/** The abort reason a signal carries, normalised to ResolveAbortError. */
+function abortReason(signal: AbortSignal): ResolveAbortError {
+  return signal.reason instanceof ResolveAbortError
+    ? signal.reason
+    : new ResolveAbortError("caller");
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortReason(signal);
+}
+
+/** Rejects with the signal's reason the moment it fires, even if `work` hangs. */
+function raceSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason instanceof Error ? signal.reason : new ResolveAbortError("caller"),
+    );
+  }
+  return new Promise<T>((resolve, reject) => {
+    // Propagate the raw reason: the overall signal carries ResolveAbortError
+    // (terminal), a per-request signal carries a plain timeout Error
+    // (retriable) — the caller's catch classifies it.
+    const onAbort = () =>
+      reject(signal.reason instanceof Error ? signal.reason : new ResolveAbortError("caller"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 
 /* ---------- small helpers ---------- */
 
@@ -132,13 +189,25 @@ function delay(ms: number): Promise<void> {
 async function getJson(
   fetchImpl: typeof fetch,
   url: string,
-  signal?: AbortSignal,
-  attempts = 3,
+  signal: AbortSignal,
+  attempts: number,
+  requestTimeoutMs: number,
 ): Promise<unknown | null> {
   for (let attempt = 0; attempt < attempts; attempt++) {
+    throwIfAborted(signal);
+    // Per-request deadline covering head AND body. The request signal is
+    // separate from the overall signal so a slow request is a retryable
+    // failure, while an overall-deadline or caller abort is terminal.
+    const req = new AbortController();
+    const onAbort = () => req.abort(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => req.abort(new Error("request-timeout")), requestTimeoutMs);
     try {
-      const res = await fetchImpl(url, { credentials: "omit", signal });
-      if (res.ok) return (await res.json()) as unknown;
+      const res = await raceSignal(fetchImpl(url, {
+        credentials: "omit",
+        signal: req.signal,
+      }), req.signal);
+      if (res.ok) return (await raceSignal(res.json(), req.signal)) as unknown;
 
       const retryable = res.status === 429 || res.status >= 500;
       if (!retryable) return null;
@@ -147,10 +216,17 @@ async function getJson(
       const backoffMs = Number.isFinite(retryAfter)
         ? Math.min(retryAfter * 1000, 2000)
         : 250 * 2 ** attempt;
-      await delay(backoffMs);
-    } catch {
-      // A thrown fetch (offline, aborted, DNS) is retried like a 5xx.
-      await delay(250 * 2 ** attempt);
+      await raceSignal(delay(backoffMs), signal);
+    } catch (e) {
+      // Overall-deadline or caller abort is terminal — never retried, never
+      // continued into the next source.
+      if (signal.aborted) throw abortReason(signal);
+      if (e instanceof ResolveAbortError) throw e;
+      // A thrown fetch (offline, per-request timeout, DNS) is retried like a 5xx.
+      await raceSignal(delay(250 * 2 ** attempt), signal);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
     }
   }
   return null;
@@ -170,8 +246,9 @@ function buildUrl(endpoint: string, params: Record<string, string>): string {
 async function fromWikipedia(
   fetchImpl: typeof fetch,
   name: string,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
   retry: number,
+  reqMs: number,
 ): Promise<RawCandidate[]> {
   const url = buildUrl(WIKIPEDIA_API, {
     action: "query",
@@ -183,7 +260,7 @@ async function fromWikipedia(
     imlimit: "100",
   });
 
-  const data = asRecord(await getJson(fetchImpl, url, signal, retry));
+  const data = asRecord(await getJson(fetchImpl, url, signal, retry, reqMs));
   const query = asRecord(data?.["query"]);
   const pages = asRecord(query?.["pages"]);
   if (!pages) return [];
@@ -238,8 +315,9 @@ async function fromCommonsTitles(
   titles: string[],
   pageTitle: string,
   source: CandidateImage["source"],
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
   retry: number,
+  reqMs: number,
 ): Promise<RawCandidate[]> {
   if (titles.length === 0) return [];
   const out: RawCandidate[] = [];
@@ -254,7 +332,7 @@ async function fromCommonsTitles(
       iiurlwidth: String(THUMB_WIDTH),
     });
 
-    const data = asRecord(await getJson(fetchImpl, url, signal, retry));
+    const data = asRecord(await getJson(fetchImpl, url, signal, retry, reqMs));
     const pages = asRecord(asRecord(data?.["query"])?.["pages"]);
     if (!pages) continue;
 
@@ -296,8 +374,9 @@ async function fromCommonsTitles(
 async function fromWikidata(
   fetchImpl: typeof fetch,
   name: string,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
   retry: number,
+  reqMs: number,
 ): Promise<{ candidates: RawCandidate[]; category: string | null }> {
   const searchUrl = buildUrl(WIKIDATA_API, {
     action: "wbsearchentities",
@@ -307,7 +386,7 @@ async function fromWikidata(
     search: name,
   });
 
-  const searchData = asRecord(await getJson(fetchImpl, searchUrl, signal, retry));
+  const searchData = asRecord(await getJson(fetchImpl, searchUrl, signal, retry, reqMs));
   const hits = searchData?.["search"];
   if (!Array.isArray(hits) || hits.length === 0) return { candidates: [], category: null };
 
@@ -320,7 +399,7 @@ async function fromWikidata(
     ids: qid,
   });
 
-  const entityData = asRecord(await getJson(fetchImpl, entityUrl, signal, retry));
+  const entityData = asRecord(await getJson(fetchImpl, entityUrl, signal, retry, reqMs));
   const entities = asRecord(entityData?.["entities"]);
   const entity = asRecord(entities?.[qid]);
   const claims = asRecord(entity?.["claims"]);
@@ -339,7 +418,7 @@ async function fromWikidata(
 
   const titles = valuesOf("P18").map((f) => `File:${f}`);
   const category = valuesOf("P373")[0] ?? null;
-  const candidates = await fromCommonsTitles(fetchImpl, titles, name, "wikidata", signal, retry);
+  const candidates = await fromCommonsTitles(fetchImpl, titles, name, "wikidata", signal, retry, reqMs);
 
   return { candidates, category };
 }
@@ -348,8 +427,9 @@ async function fromWikidata(
 async function fromCommonsSearch(
   fetchImpl: typeof fetch,
   search: string,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
   retry: number,
+  reqMs: number,
 ): Promise<RawCandidate[]> {
   const url = buildUrl(COMMONS_API, {
     action: "query",
@@ -362,7 +442,7 @@ async function fromCommonsSearch(
     iiurlwidth: String(THUMB_WIDTH),
   });
 
-  const data = asRecord(await getJson(fetchImpl, url, signal, retry));
+  const data = asRecord(await getJson(fetchImpl, url, signal, retry, reqMs));
   const pages = asRecord(asRecord(data?.["query"])?.["pages"]);
   if (!pages) return [];
 
@@ -414,7 +494,24 @@ export async function resolveCandidates(
   const aliases = opts.aliases ?? [];
   const limit = opts.limit ?? 48;
   const retry = opts.retryAttempts ?? 3;
-  const signal = opts.signal;
+  const reqMs = opts.requestTimeoutMs ?? 15_000;
+
+  // One overall signal per resolution: the caller's abort and the internal
+  // deadline funnel into it. Abort is terminal — no retries, no further
+  // sources — but a deadline expiry returns what was already gathered while
+  // a caller abort rejects.
+  const overall = new AbortController();
+  const onCallerAbort = () => overall.abort(new ResolveAbortError("caller"));
+  if (opts.signal) {
+    if (opts.signal.aborted) throw new ResolveAbortError("caller");
+    opts.signal.addEventListener("abort", onCallerAbort, { once: true });
+  }
+  let timedOut = false;
+  const deadlineTimer = setTimeout(() => {
+    timedOut = true;
+    overall.abort(new ResolveAbortError("deadline"));
+  }, opts.overallDeadlineMs ?? 90_000);
+  const signal = overall.signal;
 
   const queries: string[] = [];
 
@@ -422,33 +519,59 @@ export async function resolveCandidates(
   queries.push(buildUrl(WIKIDATA_API, { action: "wbsearchentities", search: name }));
   queries.push(buildUrl(COMMONS_API, { action: "query", gsrsearch: name }));
 
-  // Deliberately SEQUENTIAL, not Promise.all: firing these concurrently gets
-  // the client rate-limited (HTTP 429) and the swallowed failures then look
-  // like "this person has no photos". Enrollment is a one-off user action, so
-  // paying a few hundred milliseconds of latency for reliability is correct.
-  const wiki = await fromWikipedia(fetchImpl, name, signal, retry);
-  const wikidata = await fromWikidata(fetchImpl, name, signal, retry);
-  const commons = await fromCommonsSearch(fetchImpl, name, signal, retry);
+  const raws: RawCandidate[] = [];
+  let wikidataCategory: string | null = null;
+  try {
+    // Deliberately SEQUENTIAL, not Promise.all: firing these concurrently gets
+    // the client rate-limited (HTTP 429) and the swallowed failures then look
+    // like "this person has no photos". Enrollment is a one-off user action, so
+    // paying a few hundred milliseconds of latency for reliability is correct.
+    const wiki = await fromWikipedia(fetchImpl, name, signal, retry, reqMs);
+    raws.push(...wiki);
+    const wikidata = await fromWikidata(fetchImpl, name, signal, retry, reqMs);
+    raws.push(...wikidata.candidates);
+    wikidataCategory = wikidata.category;
+    const commons = await fromCommonsSearch(fetchImpl, name, signal, retry, reqMs);
+    raws.push(...commons);
 
-  const raws: RawCandidate[] = [...wiki, ...wikidata.candidates, ...commons];
+    // The Wikipedia `images` list carries titles but no URLs; resolve them here,
+    // and use the Wikidata Commons category for a second, tighter bulk search.
+    const unresolved = raws.filter((r) => r.url === "").map((r) => `File:${r.filename}`);
+    if (unresolved.length > 0) {
+      const resolved = await fromCommonsTitles(
+        fetchImpl,
+        unresolved,
+        name,
+        "wikipedia",
+        signal,
+        retry,
+        reqMs,
+      );
+      raws.push(...resolved);
+    }
 
-  // The Wikipedia `images` list carries titles but no URLs; resolve them here,
-  // and use the Wikidata Commons category for a second, tighter bulk search.
-  const unresolved = raws.filter((r) => r.url === "").map((r) => `File:${r.filename}`);
-  if (unresolved.length > 0) {
-    const resolved = await fromCommonsTitles(fetchImpl, unresolved, name, "wikipedia", signal, retry);
-    raws.push(...resolved);
-  }
-
-  if (wikidata.category) {
-    queries.push(buildUrl(COMMONS_API, { action: "query", gsrsearch: `incategory:${wikidata.category}` }));
-    const inCategory = await fromCommonsSearch(
-      fetchImpl,
-      `incategory:"${wikidata.category}"`,
-      signal,
-      retry,
-    );
-    raws.push(...inCategory);
+    if (wikidataCategory) {
+      queries.push(buildUrl(COMMONS_API, { action: "query", gsrsearch: `incategory:${wikidataCategory}` }));
+      const inCategory = await fromCommonsSearch(
+        fetchImpl,
+        `incategory:"${wikidataCategory}"`,
+        signal,
+        retry,
+        reqMs,
+      );
+      raws.push(...inCategory);
+    }
+  } catch (e) {
+    if (e instanceof ResolveAbortError) {
+      // Caller abort is terminal and propagates; the overall deadline keeps
+      // whatever was gathered before it fired.
+      if (e.kind === "caller") throw e;
+    } else {
+      throw e;
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    if (opts.signal) opts.signal.removeEventListener("abort", onCallerAbort);
   }
 
   const seen = new Set<string>();
@@ -475,5 +598,5 @@ export async function resolveCandidates(
   // found rather than handing the user unrelated faces to sort through.
   const candidates = kept.filter((c) => c.score >= MIN_RELEVANT_SCORE).slice(0, limit);
 
-  return { name, candidates, queries };
+  return { name, candidates, queries, timedOut };
 }

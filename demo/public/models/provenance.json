@@ -4,19 +4,37 @@
     {
       "file": "face_landmarker.task",
       "bytes": 3758596,
-      "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+      "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "license": "Apache-2.0",
+      "shipped": false,
+      "status": "legacy — previous detector, retained for history; not loaded by any code path and excluded from builds"
     },
     {
       "file": "w600k_mbf.onnx",
       "bytes": 13616099,
-      "sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f"
+      "sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f",
+      "license": "non-commercial research only (InsightFace weights terms; see licenses/third-party/insightface-w600k-TERMS.txt)",
+      "shipped": true
     },
     {
       "file": "face_detection_yunet_2026may.onnx",
       "bytes": 229738,
-      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0"
+      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
+      "license": "MIT (c) 2020 Shiqi Yu",
+      "shipped": true
     }
   ],
+  "runtime": {
+    "onnxruntime-web": {
+      "version": "1.30.0",
+      "license": "MIT (c) Microsoft Corporation",
+      "files": [
+        "ort/ort-wasm-simd-threaded.mjs",
+        "ort/ort-wasm-simd-threaded.wasm"
+      ],
+      "note": "Copied verbatim from the installed onnxruntime-web npm package; verify-assets.ts checks the bundled copies are byte-identical to node_modules/onnxruntime-web/dist and that the installed version equals this pin."
+    }
+  },
   "sources": {
     "face_landmarker.task": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
     "w600k_mbf.onnx": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip",
@@ -25,5 +43,5 @@
   },
   "insightface_weights_terms": "Non-commercial research only; source-code MIT does not license pretrained weights for commercial use.",
   "yunet_terms": "MIT License (c) 2020 Shiqi Yu. Dynamic-input re-export of the 2023mar model; weights distributed in opencv_zoo under the same MIT terms.",
-  "models_note": "YuNet is the detector on every path. The MediaPipe landmarker is retained only as a fallback if YuNet cannot load."
+  "models_note": "YuNet (2026may) is the detector on every path. The MediaPipe landmarker is a retired legacy asset: it is not loaded by the extension and is excluded from built and packaged output by the ship allowlist in scripts/verify-assets.ts."
 }

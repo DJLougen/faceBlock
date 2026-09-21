@@ -43,6 +43,14 @@ const previewSection = $("preview");
 
 let state: BlockList = { identities: [], enabled: true, revision: 0 };
 let enrolling = false;
+// Separate from `enrolling` so a CONFIRM_ENROLL already in flight can never be
+// entered twice, even if a click slips past the disabled buttons.
+let confirming = false;
+
+// Buttons rendered inside the identity list. They are tracked so the whole
+// page's mutating actions can be disabled while an enrollment is in flight —
+// otherwise a second RESOLVE_PREVIEW could overlap the first.
+const rowButtons: HTMLButtonElement[] = [];
 
 async function send(message: Record<string, unknown>): Promise<BgResponse> {
   const response = (await chrome.runtime.sendMessage({
@@ -85,6 +93,8 @@ function render(): void {
   enabledLabel.textContent = state.enabled ? "Protection on" : "Protection off";
 
   emptyNote.hidden = state.identities.length > 0;
+  // The list is rebuilt from scratch, so drop references to the old buttons.
+  rowButtons.length = 0;
   list.replaceChildren(
     ...state.identities.map((identity) => {
       const item = document.createElement("li");
@@ -133,13 +143,27 @@ function render(): void {
         info.append(details);
       }
 
+      const actions = document.createElement("div");
+      actions.className = "identity-actions";
+
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "secondary";
+      refresh.textContent = "Refresh reference photos";
+      refresh.title = "Gather reference photos again and review a replacement set";
+      refresh.disabled = enrolling || confirming;
+      refresh.addEventListener("click", () => startEnroll(identity.name, identity.id));
+
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "remove";
       remove.textContent = "Remove";
+      remove.disabled = enrolling || confirming;
       remove.addEventListener("click", () => void removeIdentity(identity));
 
-      item.append(info, remove);
+      rowButtons.push(refresh, remove);
+      actions.append(refresh, remove);
+      item.append(info, actions);
       return item;
     }),
   );
@@ -158,14 +182,15 @@ async function removeIdentity(identity: SavedIdentity): Promise<void> {
   }
 }
 
-function setFormEnabled(enabled: boolean): void {
+function setControlsEnabled(enabled: boolean): void {
   nameInput.disabled = !enabled;
   blockBtn.disabled = !enabled;
+  for (const button of rowButtons) button.disabled = !enabled;
 }
 
 function endEnroll(): void {
   enrolling = false;
-  setFormEnabled(true);
+  setControlsEnabled(true);
 }
 
 function clearPreview(): void {
@@ -179,12 +204,15 @@ interface PreviewEntry {
   checkbox: HTMLInputElement;
 }
 
-// One tile per kept face. The tile itself is focusable so keyboard users can
-// review each candidate; Space/Enter on the tile toggles its checkbox.
+// One tile per kept face. The tile is a <label> wrapping its checkbox, so the
+// caption acts as the checkbox's accessible name and clicking anywhere on the
+// tile — image, caption, padding — toggles it exactly once: the browser
+// forwards a label click to the control only when the click did not land on
+// the control itself. Keyboard access is the checkbox's own native
+// focus/Space behaviour, so there is no custom key handler to double-toggle.
 function buildFaceTile(face: EnrollPreviewFace): { tile: HTMLElement; entry: PreviewEntry } {
-  const tile = document.createElement("div");
+  const tile = document.createElement("label");
   tile.className = "face-tile";
-  tile.tabIndex = 0;
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
@@ -212,21 +240,21 @@ function buildFaceTile(face: EnrollPreviewFace): { tile: HTMLElement; entry: Pre
     tile.append(fallback);
   });
 
-  tile.addEventListener("keydown", (event) => {
-    if (event.target !== tile) return;
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      checkbox.checked = !checkbox.checked;
-    }
-  });
-
   tile.append(checkbox, img, caption);
   return { tile, entry: { face, checkbox } };
 }
 
-function renderPreview(preview: EnrollPreview): void {
+function renderPreview(preview: EnrollPreview, requestedIdentityId?: string): void {
+  // The backend echoes the identity this preview would update: either the one
+  // we asked to refresh, or one it matched by name. Fall back to the requested
+  // id so a refresh never silently creates a second identity.
+  const identityId = preview.identityId ?? requestedIdentityId;
+  const isRefresh = identityId != null;
+
   const heading = document.createElement("h2");
-  heading.textContent = `Is this ${preview.name}?`;
+  heading.textContent = isRefresh
+    ? `Reference photos for ${preview.name}?`
+    : `Is this ${preview.name}?`;
 
   const subline = document.createElement("p");
   subline.className = "muted";
@@ -236,7 +264,9 @@ function renderPreview(preview: EnrollPreview): void {
   const n = preview.kept.length;
   subline.textContent =
     `Found ${n} photo${n === 1 ? "" : "s"} of them out of ${preview.candidatesTried} looked at. ` +
-    `Untick any that aren't them, then press Confirm.`;
+    (isRefresh
+      ? "Untick any that aren't them, then press Confirm — the photos you keep replace the current set."
+      : "Untick any that aren't them, then press Confirm.");
 
   const entries: PreviewEntry[] = [];
   const grid = document.createElement("div");
@@ -253,14 +283,25 @@ function renderPreview(preview: EnrollPreview): void {
   if (preview.kept.length > 0) {
     const confirm = document.createElement("button");
     confirm.type = "button";
-    confirm.textContent = "Yes, block " + preview.name.split(" ")[0];
+    confirm.textContent = isRefresh
+      ? "Yes, update " + preview.name.split(" ")[0]
+      : "Yes, block " + preview.name.split(" ")[0];
     confirm.addEventListener("click", () => {
       const faces = entries.filter((entry) => entry.checkbox.checked).map((entry) => entry.face);
       if (faces.length === 0) {
         showError("Keep at least one photo, or press Cancel.");
         return;
       }
-      void confirmEnroll(preview.name, faces);
+      // One persistence request at a time: a second click while CONFIRM_ENROLL
+      // is in flight must not enqueue a duplicate write.
+      confirm.disabled = true;
+      cancel.disabled = true;
+      void confirmEnroll(preview.name, faces, identityId).then((ok) => {
+        if (!ok) {
+          confirm.disabled = false;
+          cancel.disabled = false;
+        }
+      });
     });
     actions.append(confirm);
   }
@@ -281,18 +322,23 @@ function renderPreview(preview: EnrollPreview): void {
   if (preview.kept.length === 0) {
     const guidance = document.createElement("p");
     guidance.className = "muted";
-    guidance.textContent =
-      "No photos found for that name. Try their full name, or a different " +
-      "spelling. FaceBlock can only learn from public photos of someone — it " +
-      "works best for public figures, and won't guess.";
+    guidance.textContent = isRefresh
+      ? "No usable photos found this time — the current set is unchanged. " +
+        "You can try again later, or press Cancel."
+      : "No photos found for that name. Try their full name, or a different " +
+        "spelling. FaceBlock can only learn from public photos of someone — it " +
+        "works best for public figures, and won't guess.";
     previewSection.append(guidance);
   } else {
     previewSection.append(grid);
     if (preview.kept.length < 3) {
       const warning = document.createElement("p");
       warning.className = "preview-warning";
-      warning.textContent =
-        "Only a few photos were usable, so this may miss them sometimes. You can block them again later to pick up more.";
+      warning.textContent = isRefresh
+        ? "Only a few photos were usable, so this may miss them sometimes. " +
+          "You can refresh again later to try for more."
+        : "Only a few photos were usable, so this may miss them sometimes. " +
+          "Once they're blocked, use Refresh reference photos on their entry below to look for more.";
       previewSection.append(warning);
     }
   }
@@ -320,14 +366,31 @@ function renderPreview(preview: EnrollPreview): void {
   progress.textContent = "Review the gathered faces, then confirm.";
 }
 
-async function confirmEnroll(name: string, faces: EnrollPreviewFace[]): Promise<void> {
+/**
+ * Persist the confirmed faces. Returns true when the enrollment was saved —
+ * the caller uses that to decide whether the preview's action buttons should
+ * be re-enabled (on failure the preview stays open so the user can retry or
+ * cancel).
+ */
+async function confirmEnroll(
+  name: string,
+  faces: EnrollPreviewFace[],
+  identityId?: string,
+): Promise<boolean> {
+  if (confirming) return false;
+  confirming = true;
   showError(null);
   try {
-    const response = await send({ type: "CONFIRM_ENROLL", name, faces });
+    const response = await send({
+      type: "CONFIRM_ENROLL",
+      name,
+      faces,
+      ...(identityId ? { identityId } : {}),
+    });
     clearPreview();
     nameInput.value = "";
     progress.hidden = false;
-    progress.textContent = `Blocked ${name}.`;
+    progress.textContent = identityId ? `Updated ${name}.` : `Blocked ${name}.`;
     if (response.state) {
       state = response.state;
       render();
@@ -336,11 +399,48 @@ async function confirmEnroll(name: string, faces: EnrollPreviewFace[]): Promise<
       if (refreshed.state) state = refreshed.state;
       render();
     }
+    return true;
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
+    return false;
   } finally {
+    confirming = false;
     endEnroll();
   }
+}
+
+/**
+ * Every enrollment — typed name, curated directory hit, or refresh of a saved
+ * identity — goes through RESOLVE_PREVIEW so nothing is persisted without the
+ * user confirming the gathered faces. `identityId` marks a refresh: the
+ * confirmed faces replace that identity's reference set.
+ */
+function startEnroll(name: string, identityId?: string): void {
+  if (enrolling) return;
+  enrolling = true;
+  setControlsEnabled(false);
+  showError(null);
+  clearPreview();
+  progress.hidden = false;
+  progress.textContent = identityId
+    ? `Gathering reference photos for “${name}”…`
+    : `Searching for photos of “${name}”…`;
+  void send({
+    type: "RESOLVE_PREVIEW",
+    name,
+    ...(identityId ? { identityId } : {}),
+  })
+    .then((response) => {
+      if (!response.preview) throw new Error("No preview returned.");
+      renderPreview(response.preview, identityId);
+    })
+    .catch((resolveError: unknown) => {
+      showError(
+        resolveError instanceof Error ? resolveError.message : String(resolveError),
+      );
+      endEnroll();
+      progress.hidden = true;
+    });
 }
 
 form.addEventListener("submit", (event) => {
@@ -351,37 +451,13 @@ form.addEventListener("submit", (event) => {
     showError("Enter a name to block.");
     return;
   }
-  enrolling = true;
-  setFormEnabled(false);
-  showError(null);
-  clearPreview();
-  progress.hidden = false;
-  progress.textContent = `Searching for photos of “${name}”…`;
-  void send({ type: "BLOCK_NAME", name })
-    .then((response) => {
-      // Curated reference directory hit: keep the original one-shot behaviour.
-      if (response.state) state = response.state;
-      nameInput.value = "";
-      render();
-      endEnroll();
-      progress.hidden = true;
-    })
-    .catch(() => {
-      // Unknown name: fall back to the self-seed resolver and let the user
-      // confirm the gathered faces before anything is enrolled.
-      void send({ type: "RESOLVE_PREVIEW", name })
-        .then((response) => {
-          if (!response.preview) throw new Error("No preview returned.");
-          renderPreview(response.preview);
-        })
-        .catch((resolveError: unknown) => {
-          showError(
-            resolveError instanceof Error ? resolveError.message : String(resolveError),
-          );
-          endEnroll();
-          progress.hidden = true;
-        });
-    });
+  // Re-typing someone already blocked used to silently re-enroll them. Route
+  // it through the same refresh path as the Refresh photos button: gather new
+  // candidates, preview them, and only replace the reference set on confirm.
+  const existing = state.identities.find(
+    (identity) => identity.name.toLowerCase() === name.toLowerCase(),
+  );
+  startEnroll(existing ? existing.name : name, existing?.id);
 });
 
 toggle.addEventListener("change", () => {

@@ -12,6 +12,10 @@
  * rate; a fast-moving face can briefly show a stale box. Sampled frames are
  * analysed on device and discarded; frames, embeddings, and match results
  * are never transmitted.
+ * A video whose frames cannot be analysed (tainted canvas) or whose coverage
+ * has gone persistently stale gets a small in-page badge in the same closed
+ * shadow root — it says only that coverage is degraded, never whether a face
+ * was found.
  *
  * Fast mode: images are never pre-hidden. A face is concealed only after a
  * positive local match, so a matched face may be briefly visible on first
@@ -26,8 +30,8 @@ import {
   MIN_MEDIA_PX,
 } from "../src/shared/config.ts";
 import { expandBox } from "../src/overlay/coordinates.ts";
+import { applyDetections, coastTrack, MAX_TRACK_AGE_MS, type Track } from "../src/tracking/iou.ts";
 import { sampleVideoFrame } from "../src/cv/raster.ts";
-import { applyDetections, coastTrack, type Track } from "../src/tracking/iou.ts";
 import type { Box, ObjectFit, Size } from "../src/shared/types.ts";
 import type { FrameResult, ImageResult } from "./protocol.ts";
 
@@ -75,6 +79,36 @@ const SWEEP_MS = 4000;
 const REALIGN_MS = 1000;
 /** Delay before re-evaluating after a src/srcset mutation so currentSrc settles. */
 const SRC_REEVAL_MS = 40;
+/**
+ * A frame ANALYZE_FRAME reply is only trusted while it still describes the
+ * video as it was at capture time. The background can sit on a request behind
+ * other work, so a same-generation reply can arrive long after the pixels it
+ * describes were on screen; past this bound the result is dropped rather than
+ * applied with a dishonestly fresh timestamp. Matches MAX_TRACK_AGE_MS: a
+ * reply older than the prediction horizon could only ever seed a track that
+ * is already too old to render.
+ */
+const FRAME_RESULT_MAX_AGE_MS = MAX_TRACK_AGE_MS;
+/**
+ * Transient image-analysis failures (background restart, offscreen document
+ * not up yet, a dropped reply) are retried with exponential backoff. The
+ * budget is bounded twice — by attempt count and by a wall-clock window from
+ * the first failure — so a permanently failing URL cannot retry forever, and
+ * a src change or untrack cancels any pending retry.
+ */
+const IMG_RETRY_MAX = 4;
+const IMG_RETRY_BASE_MS = 400;
+const IMG_RETRY_MAX_DELAY_MS = 4000;
+const IMG_RETRY_WINDOW_MS = 30000;
+/** In-page degraded-coverage badge: non-sensitive, says nothing about faces. */
+const WARN_CSS =
+  "position:absolute;z-index:1;pointer-events:none;display:block;" +
+  "font:11px/1.4 system-ui,sans-serif;color:#fff;background:rgba(20,20,20,.82);" +
+  "padding:2px 6px;border-radius:3px;";
+const WARN_DEGRADED_TEXT = "FaceBlock: coverage degraded";
+const WARN_TEXT = "FaceBlock: video not analyzable";
+/** Consecutive reply-level video failures before coverage is flagged degraded. */
+const VIDEO_FAIL_STREAK = 3;
 /** Marks our overlay host so the MutationObserver skips our own mutations. */
 const LAYER_ATTR = "data-fb-layer";
 const MASK_CSS = "position:absolute;background:#000;pointer-events:none;display:block;";
@@ -95,6 +129,8 @@ const stats = {
   videoBusy: 0,
   videoMasked: 0,
   videoUnanalyzable: 0,
+  imgRetried: 0,
+  videoStale: 0,
   get tracked(): number {
     return tracked.size;
   },
@@ -121,6 +157,11 @@ interface Tracked {
   source: Size | null;
   masks: HTMLElement[];
   evalTimer: number | undefined;
+  /** Transient-failure retry state; reset on success, src change, untrack. */
+  retries: number;
+  /** performance.now() of the first failure in the current retry episode. */
+  firstFailMs: number;
+  retryTimer: number | undefined;
 }
 
 /**
@@ -376,6 +417,11 @@ function contentRect(el: HTMLElement, cs: CSSStyleDeclaration): ContentRect | nu
 /* ------------------------------------------------------------------ */
 
 function layoutMasks(t: Tracked): void {
+  // Reconcile the mask pool with the region count on EVERY layout: a result
+  // with fewer regions than the last one must not leave a stale surplus mask
+  // covering nothing (or worse, covering the old face's spot on a new image).
+  const need = t.regions ? t.regions.length : 0;
+  while (t.masks.length > need) t.masks.pop()!.remove();
   if (!t.regions || !t.source || !t.img.isConnected) {
     hideMasks(t);
     return;
@@ -432,6 +478,9 @@ function scheduleRealign(): void {
 }
 
 function realign(): void {
+  // Hidden tabs still fire throttled intervals; skip so the age bound cannot
+  // prune a paused video's still-valid tracks before visibilitychange rebases.
+  if (document.visibilityState !== "visible") return;
   try {
     for (const t of tracked.values()) {
       if (t.regions && t.regions.length) layoutMasks(t);
@@ -477,6 +526,45 @@ function maybeQueue(t: Tracked): void {
   void pump();
 }
 
+/**
+ * Schedule a bounded retry for a transiently failed image analysis.
+ *
+ * The retry re-queues the CURRENT url through maybeQueue, so if the src moved
+ * on in the meantime the retry harmlessly evaluates whatever is live now.
+ * Backoff doubles from IMG_RETRY_BASE_MS up to IMG_RETRY_MAX_DELAY_MS, and the
+ * episode dies after IMG_RETRY_MAX attempts or IMG_RETRY_WINDOW_MS from the
+ * first failure — a permanently broken URL cannot spin forever.
+ */
+function scheduleImgRetry(t: Tracked): void {
+  const now = performance.now();
+  if (t.retries === 0) t.firstFailMs = now;
+  if (t.retries >= IMG_RETRY_MAX || now - t.firstFailMs > IMG_RETRY_WINDOW_MS) return;
+  t.retries++;
+  stats.imgRetried++;
+  clearTimeout(t.retryTimer);
+  const delay = Math.min(IMG_RETRY_BASE_MS * 2 ** (t.retries - 1), IMG_RETRY_MAX_DELAY_MS);
+  t.retryTimer = setTimeout(() => {
+    t.retryTimer = undefined;
+    try {
+      if (tracked.get(t.img) !== t) return;
+      // Force re-evaluation of the unchanged URL: maybeQueue dedupes on
+      // evaluated, which still holds the failed URL.
+      t.evaluated = null;
+      maybeQueue(t);
+    } catch {
+      stats.errors++;
+    }
+  }, delay) as unknown as number;
+}
+
+/** Clear retry bookkeeping — on success, invalidation, untrack, reset. */
+function clearImgRetry(t: Tracked): void {
+  t.retries = 0;
+  t.firstFailMs = 0;
+  clearTimeout(t.retryTimer);
+  t.retryTimer = undefined;
+}
+
 async function pump(): Promise<void> {
   if (pumping) return;
   pumping = true;
@@ -497,10 +585,21 @@ async function pump(): Promise<void> {
       }
       if (!res || res.ok !== true) {
         stats.errors++;
+        // Transient failure: the URL stays unevaluated-but-marked, so without
+        // a retry the image would stay unmasked until its src changed. Retry
+        // with bounded backoff; a permanent failure exhausts the budget.
+        scheduleImgRetry(t);
         continue;
       }
       const result = res.result as ImageResult | undefined;
-      if (!result || !Array.isArray(result.regions)) continue;
+      if (!result || !Array.isArray(result.regions)) {
+        // A malformed ok:true reply leaves the URL unevaluated; without a
+        // retry the image would stay unmasked until its src changed.
+        stats.errors++;
+        scheduleImgRetry(t);
+        continue;
+      }
+      clearImgRetry(t);
       rememberResult(url, result);
       t.source = { width: result.width, height: result.height };
       t.regions = result.regions;
@@ -545,6 +644,9 @@ function track(img: HTMLImageElement): void {
     source: null,
     masks: [],
     evalTimer: undefined,
+    retries: 0,
+    firstFailMs: 0,
+    retryTimer: undefined,
   };
   tracked.set(img, t);
   io.observe(img);
@@ -580,7 +682,8 @@ function untrack(img: HTMLImageElement): void {
   const t = tracked.get(img);
   if (!t) return;
   t.token++;
-  if (t.evalTimer !== undefined) clearTimeout(t.evalTimer);
+  clearTimeout(t.evalTimer);
+  clearImgRetry(t);
   clearMasks(t);
   io.unobserve(img);
   ro.unobserve(img);
@@ -622,6 +725,23 @@ function scheduleEval(t: Tracked): void {
   }, SRC_REEVAL_MS) as unknown as number;
 }
 
+/**
+ * Common invalidation path for anything that can change which resource an
+ * <img> is showing: src/srcset/sizes attribute mutations, load events, and
+ * responsive currentSrc switches observed through resize. Drops masks,
+ * invalidates any in-flight request for the old URL, cancels pending retries,
+ * and re-arms evaluation. Callers choose scheduleEval (attribute changes,
+ * where currentSrc needs a beat to settle) or maybeQueue (load/resize, where
+ * currentSrc is already final).
+ */
+function invalidateImage(t: Tracked): void {
+  t.token++;
+  clearMasks(t);
+  t.evaluated = null;
+  t.skipSmall = false;
+  clearImgRetry(t);
+}
+
 /** src/srcset/sizes changed: drop masks immediately, invalidate in-flight, re-evaluate. */
 function onImgAttr(img: HTMLImageElement): void {
   const t = tracked.get(img);
@@ -629,10 +749,7 @@ function onImgAttr(img: HTMLImageElement): void {
     track(img);
     return;
   }
-  t.token++;
-  clearMasks(t);
-  t.evaluated = null;
-  t.skipSmall = false;
+  invalidateImage(t);
   scheduleEval(t);
 }
 
@@ -658,12 +775,26 @@ interface Vtracked {
   lastSampleMs: number;
   /** At most one frame in flight per video; more would only queue stale work. */
   inflight: boolean;
-  /** Canvas taint or decode failure — never sample this video again. */
+  /** Canvas taint — never sample this RESOURCE again. Reset only when the
+   *  video loads a different resource (loadstart/emptied), never on seek or
+   *  blocklist reset. */
   unanalyzable: boolean;
-  /** Stale-response guard, the same role Tracked.token plays for images. */
+  /** currentSrc at last resource event; detects src swaps that fire no event. */
+  resourceKey: string;
+  /** Persistent analysis failure (busy/error/stale replies, expired tracks):
+   *  coverage is claimed nowhere, so the badge says so. Cleared on the next
+   *  valid result or a resource change. */
+  degraded: boolean;
+  /** Consecutive reply-level failures feeding the degraded latch. */
+  failStreak: number;
+  /** Stale-response guard, the same role Tracked.token plays for images.
+   *  Bumped on every playback/source discontinuity so a reply captured before
+   *  a seek cannot apply afterwards. */
   token: number;
   frameHandle: number | undefined;
   rafHandle: number | undefined;
+  /** In-page degraded-coverage badge, shown only while unanalyzable. */
+  warnEl: HTMLElement | null;
 }
 
 const vtracked = new Map<HTMLVideoElement, Vtracked>();
@@ -749,15 +880,79 @@ function positionVideoMask(v: Vtracked, mask: HTMLElement, frameBox: Box): void 
  * velocity is zero and the boxes stay exactly where they were detected.
  */
 function renderVideoMasks(v: Vtracked, nowMs: number): void {
+  // Prediction-age bound: misses only accrue while detection rounds run, so
+  // without this a track could coast forever across hidden time or a stalled
+  // analyser. Expired tracks are pruned, not just hidden — a stale track must
+  // not steal the next detection either.
+  const before = v.tracks.length;
+  if (before) {
+    v.tracks = v.tracks.filter((t) => nowMs - t.lastSeenMs <= MAX_TRACK_AGE_MS);
+    if (v.tracks.length !== before) {
+      syncVideoMasks(v);
+      // Coverage was lost to staleness, not to a clean "no match" round —
+      // surface it as degraded rather than looking protected.
+      if (!v.degraded) {
+        v.degraded = true;
+        syncVideoWarn(v);
+      }
+    }
+  }
   for (let i = 0; i < v.tracks.length; i++) {
     const mask = v.masks[i];
     if (mask) positionVideoMask(v, mask, coastTrack(v.tracks[i]!, nowMs));
   }
 }
 
+/**
+ * Show/hide the degraded-coverage badge. It says only that THIS video's
+ * coverage is not current — no face counts, no identities, nothing about
+ * whether anyone was detected. It exists so an unanalyzable or persistently
+ * failing video does not look covered. Hidden while protection is disabled
+ * or the video is offscreen.
+ */
+function syncVideoWarn(v: Vtracked): void {
+  const show =
+    enabled && v.video.isConnected && v.visible && (v.unanalyzable || v.degraded);
+  if (show) {
+    const root = ensureOverlayRoot();
+    if (!root) return;
+    if (!v.warnEl) {
+      v.warnEl = document.createElement("div");
+      v.warnEl.style.cssText = WARN_CSS;
+      root.appendChild(v.warnEl);
+    }
+    v.warnEl.textContent = v.unanalyzable ? WARN_TEXT : WARN_DEGRADED_TEXT;
+    const rect = contentRect(v.video, getComputedStyle(v.video));
+    if (!rect) {
+      v.warnEl.style.display = "none";
+      return;
+    }
+    v.warnEl.style.display = "block";
+    v.warnEl.style.left = `${rect.left + 4}px`;
+    v.warnEl.style.top = `${rect.top + 4}px`;
+  } else if (v.warnEl) {
+    v.warnEl.remove();
+    v.warnEl = null;
+  }
+}
+
+/**
+ * One reply-level failure (busy, error, malformed, stale-aged). A single
+ * dropped round is normal — the analyser sheds load by design — so only a
+ * streak flags the video degraded. Cleared by the next valid result.
+ */
+function noteVideoFailure(v: Vtracked): void {
+  v.failStreak++;
+  if (!v.degraded && v.failStreak >= VIDEO_FAIL_STREAK) {
+    v.degraded = true;
+    syncVideoWarn(v);
+  }
+}
+
 /** Realign hook: re-place masks from the current tracks without re-detecting. */
 function layoutVideoMasks(v: Vtracked): void {
   renderVideoMasks(v, performance.now());
+  syncVideoWarn(v);
 }
 
 /** Keep one mask element per track, in track order. */
@@ -813,8 +1008,27 @@ async function sampleVideo(v: Vtracked): Promise<void> {
   framesInflight++;
   v.lastSampleMs = performance.now();
   const token = v.token;
+  // Reconcile the resource key at sample start: a src swap that fired no
+  // resource event would otherwise fail the post-await check forever.
+  const liveKey = video.currentSrc || video.src || "";
+  if (liveKey && liveKey !== v.resourceKey) {
+    v.resourceKey = liveKey;
+    v.unanalyzable = false;
+    v.degraded = false;
+    v.failStreak = 0;
+    syncVideoWarn(v);
+  }
+  const resource = v.resourceKey;
+  // Capture time is stamped BEFORE the frame grab so the age bound also covers
+  // encoding latency — a reply is only ever fresher than this timestamp claims,
+  // never older. Track lastSeenMs inherits it, so coast prediction is anchored
+  // to when the pixels existed, not when the reply happened to arrive.
+  const capturedMs = performance.now();
   try {
     const sample = await sampleVideoFrame(video, SAMPLE_MAX_WIDTH);
+    // Source-change check BEFORE the failure branch: a tainted verdict belongs
+    // to the resource it was captured from, so it must not latch a new source.
+    if (token !== v.token || resource !== (video.currentSrc || video.src || "")) return;
     if (!sample.ok) {
       if (sample.reason === "tainted") {
         // The canvas is tainted, so this video's pixels can never be read.
@@ -822,6 +1036,7 @@ async function sampleVideo(v: Vtracked): Promise<void> {
         // say so out loud, because a silent stop looks like a broken feature.
         v.unanalyzable = true;
         stats.videoUnanalyzable++;
+        syncVideoWarn(v);
         console.warn(
           "[faceblock] video not readable: this video is cross-origin and does not " +
             "allow canvas access, so its frames cannot be analysed. Images on this " +
@@ -839,13 +1054,25 @@ async function sampleVideo(v: Vtracked): Promise<void> {
       type: "ANALYZE_FRAME",
       jpegBase64: toBase64(sample.jpeg),
     });
-    if (token !== v.token) return; // untracked or reset while in flight
+    if (token !== v.token || resource !== (video.currentSrc || video.src || "")) return;
     if (!res || res.ok !== true) {
       if (res && res.error === "busy") stats.videoBusy++;
+      noteVideoFailure(v);
       return;
     }
     const result = res.result as FrameResult | undefined;
-    if (!result) return;
+    if (!result) {
+      noteVideoFailure(v);
+      return;
+    }
+    // Elapsed capture-age gate: a reply can sit behind other work in the
+    // background and arrive long after its frame was on screen. Beyond the
+    // bound the result is dropped rather than applied as if it were fresh.
+    if (performance.now() - capturedMs > FRAME_RESULT_MAX_AGE_MS) {
+      stats.videoStale++;
+      noteVideoFailure(v);
+      return;
+    }
     v.frameSize = { width: result.width, height: result.height };
     // The offscreen document returns only MATCHED faces, so every detection is
     // a face worth masking and every resulting track inherits that identity.
@@ -855,15 +1082,27 @@ async function sampleVideo(v: Vtracked): Promise<void> {
       width: r.width,
       height: r.height,
     }));
-    v.tracks = applyDetections(v.tracks, detections, performance.now(), {
+    v.tracks = applyDetections(v.tracks, detections, capturedMs, {
       iouThreshold: TRACK_IOU,
       maxMisses: TRACK_MAX_MISSES,
+      maxAgeMs: MAX_TRACK_AGE_MS,
     });
+    // A valid result is proof coverage is current again.
+    v.failStreak = 0;
+    if (v.degraded) {
+      v.degraded = false;
+      syncVideoWarn(v);
+    }
     if (detections.length > 0) stats.videoMasked += detections.length;
     syncVideoMasks(v);
     renderVideoMasks(v, performance.now());
   } catch {
     stats.errors++;
+    // A thrown sample/send counts toward degraded coverage only if it still
+    // belongs to the current generation and resource.
+    if (token === v.token && resource === (video.currentSrc || video.src || "")) {
+      noteVideoFailure(v);
+    }
   } finally {
     framesInflight--;
     v.inflight = false;
@@ -908,17 +1147,49 @@ function armVideoLoop(v: Vtracked): void {
 }
 
 /**
- * Playback jumped or restarted: previous tracks are meaningless, so drop them
- * and recognise immediately rather than waiting out the idle interval.
+ * Playback jumped or restarted (seeking/seeked/play/pause):
+ * previous tracks describe different pixels, so drop them, bump the
+ * generation so a reply captured before the discontinuity cannot apply
+ * afterwards, and recognise immediately rather than waiting out the idle
+ * interval.
  */
 function onVideoSignal(this: HTMLVideoElement): void {
   const v = vtracked.get(this);
   if (!v) return;
   cancelVideoLoop(v);
+  v.token++;
   v.tracks = [];
   syncVideoMasks(v);
   v.lastSampleMs = 0;
   armVideoLoop(v);
+}
+
+/**
+ * The media RESOURCE changed (loadstart/emptied/loadeddata): everything
+ * playback-level invalidation does, plus — only when the resolved key
+ * actually moved — the unanalyzable/degraded latches are released. A tainted
+ * verdict belongs to the old resource and must not follow the new one, but
+ * it must also survive a same-resource loadeddata.
+ *
+ * loadstart can fire while currentSrc still reads "" or the OLD URL, so the
+ * key is reconciled on every resource event; loadeddata is what finally
+ * observes the new URL once the first frame of the new resource exists.
+ */
+function onVideoResource(this: HTMLVideoElement): void {
+  const v = vtracked.get(this);
+  if (!v) return;
+  const key = this.currentSrc || this.src || "";
+  // Only a confirmed non-empty NEW key releases the latches: emptied leaves
+  // currentSrc reading "" (or the old URL), and loadstart can precede the
+  // resolution of the new URL — neither is proof of a new resource.
+  if (key && key !== v.resourceKey) {
+    v.resourceKey = key;
+    v.unanalyzable = false;
+    v.degraded = false;
+    v.failStreak = 0;
+    syncVideoWarn(v);
+  }
+  onVideoSignal.call(this);
 }
 
 function trackVideo(video: HTMLVideoElement): void {
@@ -947,17 +1218,24 @@ function trackVideo(video: HTMLVideoElement): void {
     lastSampleMs: 0,
     inflight: false,
     unanalyzable: false,
+    resourceKey: video.currentSrc || video.src || "",
+    degraded: false,
+    failStreak: 0,
     token: 0,
     frameHandle: undefined,
     rafHandle: undefined,
+    warnEl: null,
   };
   vtracked.set(video, entry);
   io.observe(video);
   ro.observe(video);
+  video.addEventListener("seeking", onVideoSignal);
   video.addEventListener("seeked", onVideoSignal);
   video.addEventListener("play", onVideoSignal);
   video.addEventListener("pause", onVideoSignal);
-  video.addEventListener("loadeddata", onVideoSignal);
+  video.addEventListener("loadeddata", onVideoResource);
+  video.addEventListener("loadstart", onVideoResource);
+  video.addEventListener("emptied", onVideoResource);
   armVideoLoop(entry);
 }
 
@@ -966,14 +1244,21 @@ function untrackVideo(video: HTMLVideoElement): void {
   if (!v) return;
   v.token++;
   cancelVideoLoop(v);
+  video.removeEventListener("seeking", onVideoSignal);
   video.removeEventListener("seeked", onVideoSignal);
   video.removeEventListener("play", onVideoSignal);
   video.removeEventListener("pause", onVideoSignal);
-  video.removeEventListener("loadeddata", onVideoSignal);
+  video.removeEventListener("loadeddata", onVideoResource);
+  video.removeEventListener("loadstart", onVideoResource);
+  video.removeEventListener("emptied", onVideoResource);
   io.unobserve(video);
   ro.unobserve(video);
   for (const mask of v.masks) mask.remove();
   v.masks.length = 0;
+  if (v.warnEl) {
+    v.warnEl.remove();
+    v.warnEl = null;
+  }
   vtracked.delete(video);
 }
 
@@ -985,13 +1270,32 @@ function resetVideos(): void {
     v.frameSize = null;
     v.lastSampleMs = 0;
     syncVideoMasks(v);
+    // Protection may have been disabled; the badge must not claim degraded
+    // coverage on an unprotected page, and must not claim coverage either.
+    syncVideoWarn(v);
   }
 }
 
-/** A tab switch back should not wait out the sampling interval. */
+/**
+ * A tab switch back should not wait out the sampling interval — and must not
+ * coast across the hidden gap. While hidden, no rAF and no detection rounds
+ * ran, so a playing video's tracks describe pixels from before the hide:
+ * drop them. A paused video shows the same frozen frame, so its tracks stay
+ * valid; their lastSeenMs is rebased to now so the age bound does not count
+ * frozen time against them.
+ */
 function onVisibilityChange(): void {
   if (document.visibilityState !== "visible") return;
-  for (const v of vtracked.values()) v.lastSampleMs = 0;
+  const now = performance.now();
+  for (const v of vtracked.values()) {
+    v.lastSampleMs = 0;
+    if (v.video.paused) {
+      for (const t of v.tracks) t.lastSeenMs = now;
+    } else {
+      v.tracks = [];
+      syncVideoMasks(v);
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1010,10 +1314,14 @@ const io = new IntersectionObserver(
             v.visible = e.isIntersecting;
             // Sample promptly on entry rather than waiting out the interval.
             if (v.visible) v.lastSampleMs = 0;
+            syncVideoWarn(v);
           }
           continue;
         }
         t.visible = e.isIntersecting;
+        // No retry-budget reset here: a scheduled retry already clears
+        // evaluated before re-queueing, and an exhausted URL must not gain
+        // fresh attempts just by scrolling in and out of view.
         if (t.visible) maybeQueue(t);
       }
     } catch {
@@ -1028,10 +1336,11 @@ const ro = new ResizeObserver((entries) => {
     for (const e of entries) {
       const t = tracked.get(e.target as HTMLImageElement);
       if (!t) continue;
-      // An image skipped for being tiny may have grown into range.
-      if (t.skipSmall) {
-        t.skipSmall = false;
-        t.evaluated = null;
+      const url = t.img.currentSrc || t.img.src || "";
+      // Responsive srcset can swap currentSrc on resize without a load event;
+      // route it through the same invalidation path as an attribute change.
+      if (t.skipSmall || (url && url !== t.evaluated)) {
+        invalidateImage(t);
         maybeQueue(t);
       }
     }
@@ -1101,7 +1410,10 @@ function onLoad(e: Event): void {
     if (!t) return;
     const url = img.currentSrc || img.src || "";
     if (url && url !== t.evaluated) {
-      t.evaluated = null;
+      // A load event for a different URL than we last evaluated means the
+      // resource changed under us (srcset pick, lazy swap): full invalidation
+      // so an in-flight request for the old URL cannot apply stale regions.
+      invalidateImage(t);
       maybeQueue(t);
     }
   } catch {
@@ -1119,8 +1431,9 @@ function resetAll(): void {
   resultByUrl.clear();
   for (const t of tracked.values()) {
     t.token++;
-    if (t.evalTimer !== undefined) clearTimeout(t.evalTimer);
+    clearTimeout(t.evalTimer);
     t.evalTimer = undefined;
+    clearImgRetry(t);
     clearMasks(t);
     t.evaluated = null;
     t.skipSmall = false;

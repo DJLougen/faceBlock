@@ -10,8 +10,20 @@ There is NO WARRANTY, to the extent permitted by law.
 
 Support development: https://ko-fi.com/djlougen
 
-Bundled third-party components keep their own terms:
-  - face_detection_yunet_2023mar.onnx (face detection): MIT, (c) 2020 Shiqi Yu
-  - w600k_mbf.onnx (face recognition weights): non-commercial research use only.
-    NOT covered by this project licence; commercial use requires replacing it.
+Bundled third-party components keep their own terms (verbatim texts in
+licenses/third-party/):
+  - face_detection_yunet_2026may.onnx (face detection): MIT, (c) 2020 Shiqi Yu
+  - ort/ort-wasm-simd-threaded.{mjs,wasm} (ONNX Runtime Web 1.30.0): MIT,
+    (c) Microsoft Corporation; see onnxruntime-web-ThirdPartyNotices.txt
+  - w600k_mbf.onnx (InsightFace face-recognition weights): non-commercial
+    research purposes only. NOT covered by this project's licence and carrying
+    no grant here; use outside non-commercial research requires replacing it
+    or obtaining rights upstream.
 See demo/public/models/provenance.json for sources and checksums.
+
+DISTRIBUTION STATUS: this is a local research/verification bundle, not a
+release-cleared distributable. The demo photographs in demo/public/samples/
+assert no redistribution license (see sources.json) and are therefore excluded
+from the packaged archive; the recognition weights remain restricted to
+non-commercial research. Do not redistribute this bundle publicly until the
+sample photos are replaced or their permissions are documented.

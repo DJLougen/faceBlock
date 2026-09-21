@@ -2,7 +2,7 @@
 
 **Support this project:** [ko-fi.com/djlougen](https://ko-fi.com/djlougen)
 
-A Chromium extension that blocks a **person** across the web — not just their account. Type a name once, confirm the faces it finds, and FaceBlock covers matching faces with opaque black boxes in ordinary webpage images and videos. Everything runs on your device; nothing but the name you type is ever sent anywhere.
+A Chromium extension that blocks a **person** across the web — not just their account. Type a name once, confirm the faces it finds, and FaceBlock covers matching faces with opaque black boxes in ordinary webpage images and videos. All inference runs on your device; enrolment queries public reference-photo APIs and downloads candidate images, but no image, embedding, or result is ever uploaded.
 
 ---
 
@@ -10,7 +10,7 @@ A Chromium extension that blocks a **person** across the web — not just their 
 
 Blocking someone on a social platform only removes *their account*. Their face still shows up in screenshots, reposts, memes, avatars, collages, thumbnails, embedded media, and video — posted by other people entirely. FaceBlock targets the thing you actually don't want to see: the face itself.
 
-It also does not ask you to trust a server. There is no backend. Once installed, it works offline.
+It also does not ask you to trust a server. There is no backend. Detection and matching are fully local; enrolment needs the network only to find and download reference photos.
 
 ---
 
@@ -67,7 +67,7 @@ bun install
 bun run build:extension
 ```
 
-That creates a folder called `dist-extension`. (About 19 MB — the face model is small.)
+That creates a folder called `dist-extension`. (Tens of MB — the recognition model is most of it; `bun run package` prints the exact archive size.)
 
 **3. Load it into Chrome.**
 
@@ -98,17 +98,17 @@ FaceBlock finds reference photos from public sources, so it works for **public f
 | --- | --- |
 | `Donald Trump` | 47 photos checked → 24 with a single face → 6 kept |
 | `Ada Lovelace` | 7 faces found → 2 kept (most depictions of her are paintings, which the detector still often can't read) |
-| `Theo Browne` | **0 candidates** — those sources have no photos of him, so FaceBlock says so instead of guessing |
+| `Theo Browne` | enrols from the bundled demo references (local-demo build) — the public sources have no photos of him, so a name-only lookup reports 0 candidates instead of guessing |
 
-If a name isn't covered, FaceBlock tells you plainly rather than filling the list with unrelated faces. You can also enrol someone from your own reference photo.
+If a name isn't covered, FaceBlock tells you plainly rather than filling the list with unrelated faces. Enrolment is name-based only — there is no manual photo upload. (The local-demo build ships two pre-curated people in `extension/references.json` so the fixtures work offline; the packaged zip carries no sample photos — see [Demo assets](#demo-assets).)
 
 ---
 
 ## Privacy
 
-- **The only thing that leaves your device is the name you type.** During enrolment it's sent to public reference-photo APIs to find candidate images — the same information you'd type into a search box.
-- **Nothing else is transmitted.** No images, no face crops, no embeddings, no page media, no browsing history, no match results.
-- **Reference photos are not kept.** After enrolment the downloads are discarded; only what's needed to recognise the person later stays, plus minimal metadata (name, source URLs, timestamp) in `chrome.storage.local`.
+- **What leaves your device: requests, not content.** Enrolment sends the name you type to public reference-photo APIs (Wikipedia, Wikidata, Wikimedia Commons) and then requests the candidate-image URLs they return. Checking a page image may send a request for that image's URL to its host. Like any fetch, those requests necessarily expose the URL and ordinary network metadata to the host — but no image bytes, face crops, embeddings, page media, browsing history, or match results are ever uploaded.
+- **Page media is fetched, never sent.** To check an image on a page, FaceBlock downloads the image bytes itself (read-only, credentials omitted) and analyses them on your device.
+- **Reference photos are not saved by the extension.** After enrolment the downloads are discarded; what persists is the recognition descriptors plus minimal metadata (name, source URLs, timestamp) in `chrome.storage.local` — not the photo files themselves. (Your browser's normal HTTP cache may still hold downloaded resources, as it does for anything you view.)
 - **Video frames are examined on your device and discarded.**
 - Face detection and matching run locally in the browser. No server, no account, no telemetry.
 
@@ -116,15 +116,15 @@ If a name isn't covered, FaceBlock tells you plainly rather than filling the lis
 
 ## Measured results
 
-Numbers below come from the harness in this repo, on 24 held-out photographs of one person that were **not** used for enrolment, plus timing runs against local fixtures. They are measurements, not marketing: the same protocol was applied before and after each change, and the regressions I hit are in the commit history.
+Numbers below come from the harness in this repo, on 24 held-out photographs of one person that were **not** used for enrolment, plus timing runs against local fixtures. They are measurements, not marketing: the same protocol was applied before and after each change, and the regressions I hit are in the commit history. **These are historical photographic/timing measurements** — they are not reproduced by the current automated gates, which are unit tests plus a fail-closed asset verifier and a browser smoke check that emits JSON diagnostics (not held-out accuracy).
 
 ### Detection — 24 held-out photos
 
 | detector configuration | faces found | of those, masked (matched) |
 | --- | --- | --- |
-| MediaPipe landmarker, defaults | 6 | 5 |
-| MediaPipe landmarker, tuned floors + tiled pass | 11 | 8 |
-| **YuNet (current)** | **13** | 7 |
+| MediaPipe landmarker, defaults (historical) | 6 | 5 |
+| MediaPipe landmarker, tuned floors + tiled pass (historical) | 11 | 8 |
+| **YuNet (current detector; historical measurement)** | **13** | 7 |
 
 The two cases the old detector returned *nothing* for are the interesting ones: a side-on profile, and faces in a wide shot. A crowd photo (an oath ceremony) went from **2 faces to 17**.
 
@@ -132,13 +132,15 @@ The two cases the old detector returned *nothing* for are the interesting ones: 
 
 | | before | after |
 | --- | --- | --- |
-| 2400×2400 photo | 93 ms | **72 ms** |
-| 460×460 photo | 54 ms | **36 ms** |
+| 2400×2400 photo | 93 ms | **72 ms** (historical) |
+| 460×460 photo | 54 ms | **36 ms** (historical) |
 
-Download size, after removing an unused second detector and three unrelated ONNX
-Runtime builds that were being bundled:
+Download size — historical figures, measured when an unused second detector and
+three unrelated ONNX Runtime builds were still being bundled. The retired
+MediaPipe landmarker has since been excluded from packaging too, so current
+archives are smaller still; run `bun run package` for the live number.
 
-| | before | after |
+| | before | after (historical) |
 | --- | --- | --- |
 | packaged zip | 48.2 MB | **19.2 MB** |
 | unpacked extension | 133 MB | **31 MB** |
@@ -150,7 +152,7 @@ The detector was never the bottleneck. Rasterising a 2400×2400 photo pulled ~23
 
 ### Tests
 
-`bun test tests` — **121 passing**, including 9 that pin the detector's decode arithmetic and non-max suppression, which are easy to get subtly wrong and invisible once buried in a model call.
+`bun test tests` — the suite prints its own live count. It includes tests that pin the detector's decode arithmetic and non-max suppression (easy to get subtly wrong and invisible once buried in a model call), the matching pipeline, enrolment resolution, tracking, and the packaging/asset gates.
 
 ## Accuracy — read this before trusting it
 
@@ -204,10 +206,12 @@ ffmpeg -y -f lavfi -i "color=c=0x141414:s=780x660:d=6:r=25" -loop 1 -i samples/t
 
 ```bash
 bun install
-bun test tests            # 112 tests
+bun test tests            # unit tests
 bun run typecheck         # tsc --noEmit
-bun run build:extension   # → dist-extension/
-bun run package           # → faceBlock-<version>.zip
+bun run verify:assets     # fail-closed model/asset/license verification
+bun run build:extension   # → dist-extension/ (verifies source assets first)
+bun run package           # → faceBlock-<version>.zip (sample-free staging tree, verified before/after zip)
+bun run verify:browser    # live-Chrome smoke check; emits JSON diagnostics, not held-out accuracy
 bun run dev               # fixture pages on :5173
 ```
 
@@ -217,14 +221,14 @@ Bundled third-party models are recorded, with their origins, in `demo/public/mod
 
 ## Demo assets
 
-`demo/public/samples/` contains photographs of public figures (Theo Browne, Dwarkesh Patel) and one public-domain portrait, used solely to demonstrate enrolment and control behaviour. Their origins are recorded in `sources.json`. If you fork this for anything beyond a demo, replace them with your own references.
+`demo/public/samples/` contains photographs of public figures (Theo Browne, Dwarkesh Patel) and one public-domain portrait, used solely to demonstrate enrolment and control behaviour in the **local-demo build** (`bun run build:extension`). Their origins are recorded in `sources.json`, which asserts **no redistribution license** — so `bun run package` produces a sample-free archive: the zip contains no `samples/` files and an empty `references.json` (name-based enrolment still works; the curated fixtures are a local-demo feature). If you fork this for anything beyond a demo, replace them with your own references. **Do not redistribute the demo build or its photos publicly** until they are replaced or their permissions are documented.
 
 ---
 
 ## License
 
 FaceBlock is **free and open-source software**, licensed under the
-[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+[GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
 
 Copyright (C) 2026 Daniel Lougen. See [NOTICE](NOTICE) for the required notice.
 
@@ -236,19 +240,29 @@ absorbed without giving anything back.
 **No cost, no account, no telemetry.** If it's useful to you, you can support
 development here: [ko-fi.com/djlougen](https://ko-fi.com/djlougen).
 
-### Third-party models
+### Third-party components
 
-This project's licence does **not** relicense the model weights it bundles:
+This project's licence does **not** relicense the model weights or runtime it
+bundles. Verbatim terms ship in `licenses/third-party/` and inside the built
+extension:
 
 | Asset | Role | Terms |
 | --- | --- | --- |
-| `face_detection_yunet_2023mar.onnx` | face detection | **MIT** (© 2020 Shiqi Yu) |
-| `w600k_mbf.onnx` | face recognition | **Non-commercial research only** |
-| `face_landmarker.task` | detection fallback only | Apache-2.0 |
+| `face_detection_yunet_2026may.onnx` | face detection | **MIT** (© 2020 Shiqi Yu) |
+| `w600k_mbf.onnx` | face recognition | **Non-commercial research only** (InsightFace weights terms — no grant) |
+| `ort/ort-wasm-simd-threaded.*` | ONNX Runtime Web | **MIT** (© Microsoft Corporation) |
 
 The recognition weights are the one component whose terms are narrower than the
-project's. They are fine for personal, research and non-commercial use, which is
-what this project is for. If you ever need a build without that restriction, the
-drop-in replacement is OpenCV Zoo's SFace, which is Apache-2.0.
+project's: upstream licenses them for **non-commercial research purposes only**,
+which is the scope this project operates in — that is not a blanket permission
+for every personal or non-commercial use. A differently-licensed alternative
+exists (OpenCV Zoo's SFace, Apache-2.0), but swapping it in is an integration
+project — different preprocessing, embedding dimension, and thresholds — that
+would require re-enrolment and fresh validation, not a drop-in replacement.
+
+`demo/public/models/face_landmarker.task` (Apache-2.0) is a **retired legacy
+asset**: it was the previous detector, is no longer loaded by any code path,
+and is excluded from built and packaged output by the ship allowlist in
+`scripts/verify-assets.ts`. It remains in the repo for provenance only.
 
 Provenance and checksums: `demo/public/models/provenance.json`.

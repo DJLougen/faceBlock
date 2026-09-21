@@ -78,6 +78,28 @@ export async function sampleVideoFrame(
   }
 }
 
+
+/**
+ * The canvas rectangle imageToRasterRegion samples for a box: the box grown
+ * by `pad` on each side, clamped to the image. Pure so callers and tests can
+ * reason about coverage without a canvas.
+ */
+export function regionRect(
+  img: { naturalWidth: number; naturalHeight: number },
+  box: { x: number; y: number; width: number; height: number },
+  pad = 0.6,
+): { x: number; y: number; width: number; height: number } {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  const padX = box.width * pad;
+  const padY = box.height * pad;
+  const x0 = Math.max(0, Math.floor(box.x - padX));
+  const y0 = Math.max(0, Math.floor(box.y - padY));
+  const x1 = Math.min(iw, Math.ceil(box.x + box.width + padX));
+  const y1 = Math.min(ih, Math.ceil(box.y + box.height + padY));
+  return { x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0) };
+}
+
 /**
  * Rasterise only the neighbourhood of a box, not the whole image.
  *
@@ -94,22 +116,13 @@ export function imageToRasterRegion(
   box: { x: number; y: number; width: number; height: number },
   pad = 0.6,
 ): { raster: Raster; offsetX: number; offsetY: number } {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
-  const padX = box.width * pad;
-  const padY = box.height * pad;
-  const x0 = Math.max(0, Math.floor(box.x - padX));
-  const y0 = Math.max(0, Math.floor(box.y - padY));
-  const x1 = Math.min(iw, Math.ceil(box.x + box.width + padX));
-  const y1 = Math.min(ih, Math.ceil(box.y + box.height + padY));
-  const w = Math.max(1, x1 - x0);
-  const h = Math.max(1, y1 - y0);
+  const rect = regionRect(img, box, pad);
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = rect.width;
+  canvas.height = rect.height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2d canvas unavailable");
-  ctx.drawImage(img, x0, y0, w, h, 0, 0, w, h);
-  const { data } = ctx.getImageData(0, 0, w, h);
-  return { raster: { width: w, height: h, data }, offsetX: x0, offsetY: y0 };
+  ctx.drawImage(img, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+  const { data } = ctx.getImageData(0, 0, rect.width, rect.height);
+  return { raster: { width: rect.width, height: rect.height, data }, offsetX: rect.x, offsetY: rect.y };
 }

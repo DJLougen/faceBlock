@@ -33,4 +33,10 @@ export interface ResolveResult {
   candidates: CandidateImage[];
   /** Human-readable record of the endpoints queried, for the UI to disclose. */
   queries: string[];
+  /**
+   * True when the overall deadline fired before all sources finished —
+   * `candidates` is then partial, and an empty list means "search timed out",
+   * not "no photos exist".
+   */
+  timedOut?: boolean;
 }

@@ -6,6 +6,21 @@ const ASSOCIATION_RADIUS_FACTOR = 1.5;
 const MIN_ASSOCIATION_RADIUS_PX = 24;
 
 /**
+ * Hard wall-clock bound on how long a track may coast on prediction alone.
+ *
+ * Misses only accrue when a detection round actually runs, so a track can
+ * outlive its usefulness without ever accumulating misses: a hidden tab runs
+ * no rAF and no sampling, a paused-then-scrubbed video may not sample for
+ * seconds, and a busy analyser drops rounds entirely. In every case the
+ * velocity extrapolation keeps marching the mask across the screen long
+ * after the pixels it described are gone. Two seconds is far beyond the
+ * worst-case inter-detection gap (~4 active misses at 250 ms) yet far below
+ * any realistic hidden-tab duration, so it only ever fires when prediction
+ * has genuinely lost contact with the video.
+ */
+export const MAX_TRACK_AGE_MS = 2000;
+
+/**
  * A face being followed across video frames between low-rate recognition
  * rounds. Recognition is expensive, so it runs every few hundred ms; this
  * record is what lets the mask stay glued to the face at full video rate.
@@ -82,18 +97,30 @@ export function coastTrack(track: Track, nowMs: number): Box {
  * tracks; tracks missing more than `maxMisses` rounds are dropped so a
  * lost face falls back to fresh detection.
  *
+ * `maxAgeMs` drops tracks whose last observation is older than the bound
+ * BEFORE association, so an ancient track cannot steal a fresh detection
+ * (which would hand it a huge, meaningless velocity). Omit it to keep pure
+ * miss-count lifetime.
+ *
  * Returns a new array; neither `tracks` nor its entries are mutated.
  */
 export function applyDetections(
   tracks: readonly Track[],
   detections: readonly Box[],
   nowMs: number,
-  opts?: { iouThreshold?: number; maxMisses?: number; centreFallback?: boolean }
+  opts?: { iouThreshold?: number; maxMisses?: number; centreFallback?: boolean; maxAgeMs?: number }
 ): Track[] {
   const iouThreshold = opts?.iouThreshold ?? 0.3;
   const maxMisses = opts?.maxMisses ?? 2;
   const centreFallback = opts?.centreFallback ?? true;
+  const maxAgeMs = opts?.maxAgeMs;
 
+  // Age gate: a track whose last OBSERVED box is older than the bound is
+  // dropped outright, regardless of its miss count. This is the only lifetime
+  // limit that still works when detection rounds stop happening at all.
+  if (maxAgeMs !== undefined) {
+    tracks = tracks.filter((t) => nowMs - t.lastSeenMs <= maxAgeMs);
+  }
   // Greedy maximum-IoU assignment. Scanning tracks outer / detections inner
   // in ascending index order and keeping the first strictly-best score makes
   // ties resolve to the lowest track index, then the lowest detection index.
