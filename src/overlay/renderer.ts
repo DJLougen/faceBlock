@@ -1,11 +1,5 @@
-import {
-  BOX_MARGIN_X,
-  BOX_MARGIN_Y,
-  BOX_SCALE_X,
-  BOX_SCALE_Y,
-} from "../shared/config.ts";
 import type { Box, CensorRegion, ObjectFit, Size } from "../shared/types.ts";
-import { expandBox, mapSourceBoxToRendered } from "./coordinates.ts";
+import { expandDetectionBox, mapSourceBoxToRendered } from "./coordinates.ts";
 
 const LAYER_ATTR = "data-faceblock-overlay";
 
@@ -41,11 +35,7 @@ export function renderCensors(
   const rendered: Size = { width: img.clientWidth, height: img.clientHeight };
   for (const region of regions) {
     const mapped = mapSourceBoxToRendered(region, source, rendered, objectFit);
-    const box = expandBox(
-      mapped,
-      { marginX: BOX_MARGIN_X, marginY: BOX_MARGIN_Y, scaleX: BOX_SCALE_X, scaleY: BOX_SCALE_Y },
-      rendered,
-    );
+    const box = expandDetectionBox(mapped, rendered);
     layer.appendChild(censorEl(box, region.identityId, region.confidence));
   }
 }
