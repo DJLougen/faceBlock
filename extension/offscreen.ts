@@ -34,7 +34,8 @@ import { cosineNormalized } from "../src/matching/cosine.ts";
 import { resolveCandidates } from "../src/resolve/resolve.ts";
 import { clusterEmbeddings } from "../src/resolve/cluster.ts";
 import type { CandidateImage } from "../src/resolve/types.ts";
-import { BOX_SCALE_X, BOX_SCALE_Y, MIN_REFERENCE_IMAGES } from "../src/shared/config.ts";
+import { expandDetectionBox } from "../src/overlay/coordinates.ts";
+import { MIN_REFERENCE_IMAGES } from "../src/shared/config.ts";
 import type { BlockedIdentity, Box, FaceDetection } from "../src/shared/types.ts";
 import type {
   EnrollPreview,
@@ -615,19 +616,6 @@ async function confirmEnroll(
 
 /* ---------- analyze ---------- */
 
-/** Grow a detection box by the configured scale around its center, clamped to the image. */
-function expandBox(box: Box, w: number, h: number): Box {
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  const hw = (box.width * BOX_SCALE_X) / 2;
-  const hh = (box.height * BOX_SCALE_Y) / 2;
-  const x0 = Math.max(0, Math.min(cx - hw, w));
-  const y0 = Math.max(0, Math.min(cy - hh, h));
-  const x1 = Math.max(0, Math.min(cx + hw, w));
-  const y1 = Math.max(0, Math.min(cy + hh, h));
-  return { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
-}
-
 /** Unthresholded best cosine over every gallery vector, for diagnostics. */
 function bestCosine(
   embedding: Float32Array,
@@ -684,7 +672,7 @@ async function analyzeDecoded(
       const match = matchFace(embedding, identities, { minAgreements: MIN_AGREEMENTS });
       if (match) {
         regions.push({
-          ...expandBox(det.box, w, h),
+          ...expandDetectionBox(det.box, { width: w, height: h }),
           confidence: match.score,
           identityId: match.identityId,
         });
