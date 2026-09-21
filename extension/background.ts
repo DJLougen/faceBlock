@@ -8,11 +8,11 @@
  * embeddings never leave the extension.
  *
  * Message contract (see protocol.ts):
- *   UI      -> {target:'background', type:'GET_STATE'|'BLOCK_NAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL'|'REMOVE'|'SET_ENABLED'}
+ *   UI      -> {target:'background', type:'GET_STATE'|'BLOCK_NAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL'|'REMOVE'|'SET_ENABLED'|'SET_EARN_ENABLED'}
  *   Content -> {target:'background', type:'PROCESS_IMAGE', url}
  *   Content -> {target:'background', type:'ANALYZE_FRAME', jpegBase64}
  *   Worker  -> {target:'offscreen',  type:'ANALYZE'|'ANALYZE_FRAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL', name?, url?, jpegBase64?, identities?, faces?, identityId?}
- *   Worker  -> {target:'content',   type:'STATE_CHANGED', revision, enabled}
+ *   Worker  -> {target:'content',   type:'STATE_CHANGED', revision, enabled, earnEnabled}
  *
  * Enrollment never persists on preview: RESOLVE_PREVIEW (and its legacy
  * alias BLOCK_NAME) only gathers faces; CONFIRM_ENROLL is the sole write
@@ -97,12 +97,13 @@ async function loadState(): Promise<BlockList> {
     cached = {
       identities: existing.identities as SavedIdentity[],
       enabled: existing.enabled,
+      earnEnabled: existing.earnEnabled === true,
       revision: typeof existing.revision === "number" ? existing.revision : 0,
     };
     return cached;
   }
   // First run (or corrupt payload): default to enabled with an empty blocklist.
-  cached = { identities: [], enabled: true, revision: 0 };
+  cached = { identities: [], enabled: true, earnEnabled: false, revision: 0 };
   await chrome.storage.local.set({ [STORAGE_KEY]: cached });
   return cached;
 }
@@ -131,12 +132,21 @@ async function commit(state: BlockList): Promise<BlockList> {
   return next;
 }
 
+/** Persist sponsor-preview toggle without bumping revision or clearing analysis cache. */
+async function persistEarn(state: BlockList): Promise<BlockList> {
+  await chrome.storage.local.set({ [STORAGE_KEY]: state });
+  cached = state;
+  broadcast(state);
+  return state;
+}
+
 function broadcast(state: BlockList): void {
   const message = {
     target: "content",
     type: "STATE_CHANGED",
     revision: state.revision,
     enabled: state.enabled,
+    earnEnabled: state.earnEnabled,
   };
   void chrome.tabs
     .query({})
@@ -399,7 +409,15 @@ async function handleMessage(
     case "GET_STATE":
       if (fromContent) {
         const state = await loadState();
-        return { ok: true, state: { enabled: state.enabled, revision: state.revision, identities: [] } };
+        return {
+          ok: true,
+          state: {
+            enabled: state.enabled,
+            earnEnabled: state.earnEnabled,
+            revision: state.revision,
+            identities: [],
+          },
+        };
       }
       // Cheap path: never touches the offscreen document or the job queue,
       // so the UI stays responsive during long inference.
@@ -429,6 +447,15 @@ async function handleMessage(
       if (fromContent) return { ok: false, error: "Extension pages only." };
       const enabled = message.enabled === true;
       const state = await mutate((s) => (s.enabled === enabled ? s : commit({ ...s, enabled })));
+      return { ok: true, state };
+    }
+
+    case "SET_EARN_ENABLED": {
+      if (fromContent) return { ok: false, error: "Extension pages only." };
+      const earnEnabled = message.earnEnabled === true;
+      const state = await mutate((s) =>
+        s.earnEnabled === earnEnabled ? s : persistEarn({ ...s, earnEnabled }),
+      );
       return { ok: true, state };
     }
 

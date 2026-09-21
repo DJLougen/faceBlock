@@ -152,6 +152,8 @@ function el(id: string): StubEl {
 
 for (const [id, tag] of [
   ["enabled-toggle", "input"],
+  ["earn-toggle", "input"],
+  ["earn-label", "span"],
   ["enabled-label", "span"],
   ["block-form", "form"],
   ["name-input", "input"],
@@ -166,6 +168,7 @@ for (const [id, tag] of [
   byId.set(id, new StubEl(tag));
 }
 el("enabled-toggle").type = "checkbox";
+el("earn-toggle").type = "checkbox";
 el("name-input").type = "text";
 el("block-btn").type = "submit";
 
@@ -242,7 +245,7 @@ function identity(id: string, name: string): SavedIdentity {
 }
 
 function blockList(identities: SavedIdentity[], revision: number): BlockList {
-  return { identities, enabled: true, revision };
+  return { identities, enabled: true, earnEnabled: false, revision };
 }
 
 function injectState(next: BlockList): void {
@@ -502,6 +505,42 @@ describe("options enrollment flow", () => {
 
     buttonByText("Cancel")!.click();
     await flush();
+  });
+});
+
+describe("options storage sync", () => {
+  test("sponsor preview toggle from another page syncs when revision is unchanged", async () => {
+    injectState(blockList([], 1));
+    expect(el("earn-toggle").checked).toBe(false);
+    expect(el("earn-label").textContent).toBe("Preview off");
+
+    injectState({ ...blockList([], 1), earnEnabled: true });
+    expect(el("earn-toggle").checked).toBe(true);
+    expect(el("earn-label").textContent).toBe("Preview on");
+
+    injectState({ ...blockList([], 1), earnEnabled: false });
+    expect(el("earn-toggle").checked).toBe(false);
+    expect(el("earn-label").textContent).toBe("Preview off");
+  });
+
+  test("protection toggle from another page syncs when revision is unchanged", async () => {
+    injectState({ ...blockList([], 2), enabled: true });
+    expect(el("enabled-toggle").checked).toBe(true);
+    expect(el("enabled-label").textContent).toBe("Protection on");
+
+    injectState({ ...blockList([], 2), enabled: false });
+    expect(el("enabled-toggle").checked).toBe(false);
+    expect(el("enabled-label").textContent).toBe("Protection off");
+  });
+
+  test("ignores storage writes that match the current page state", async () => {
+    injectState({ ...blockList([], 3), earnEnabled: true, enabled: true });
+    const earnBefore = el("earn-toggle").checked;
+    const enabledBefore = el("enabled-toggle").checked;
+
+    injectState({ ...blockList([], 3), earnEnabled: true, enabled: true });
+    expect(el("earn-toggle").checked).toBe(earnBefore);
+    expect(el("enabled-toggle").checked).toBe(enabledBefore);
   });
 });
 

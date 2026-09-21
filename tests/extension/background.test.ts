@@ -348,4 +348,37 @@ describe("enrollment contract", () => {
     expect(res.ok).toBe(false);
     expect(res.error).toBe("Extension pages only.");
   });
+
+  test("earnEnabled defaults false and SET_EARN_ENABLED persists", async () => {
+    const boot = store["faceblockState"] as BlockList;
+    expect(boot.earnEnabled).toBe(false);
+
+    const on = await send({ target: "background", type: "SET_EARN_ENABLED", earnEnabled: true });
+    expect(on.ok).toBe(true);
+    expect((on.state as BlockList).earnEnabled).toBe(true);
+
+    const off = await send({ target: "background", type: "SET_EARN_ENABLED", earnEnabled: false });
+    expect(off.ok).toBe(true);
+    expect((off.state as BlockList).earnEnabled).toBe(false);
+  });
+
+
+  test("SET_EARN_ENABLED does not bump revision", async () => {
+    const before = store["faceblockState"] as BlockList;
+    const rev = before.revision;
+    const on = await send({ target: "background", type: "SET_EARN_ENABLED", earnEnabled: true });
+    expect(on.ok).toBe(true);
+    expect((on.state as BlockList).revision).toBe(rev);
+    expect((on.state as BlockList).earnEnabled).toBe(true);
+    const off = await send({ target: "background", type: "SET_EARN_ENABLED", earnEnabled: false });
+    expect((off.state as BlockList).revision).toBe(rev);
+  });
+  test("content GET_STATE includes earnEnabled but not identities", async () => {
+    await send({ target: "background", type: "SET_EARN_ENABLED", earnEnabled: true });
+    const res = await send({ target: "background", type: "GET_STATE" }, false);
+    expect(res.ok).toBe(true);
+    const state = res.state as BlockList;
+    expect(state.earnEnabled).toBe(true);
+    expect(state.identities).toEqual([]);
+  });
 });

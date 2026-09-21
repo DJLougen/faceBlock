@@ -367,3 +367,33 @@ describe("image mask reconciliation", () => {
     expect(h.overlayMasks()).toHaveLength(1);
   });
 });
+
+describe("sponsor preview toggle", () => {
+  test("toggling earnEnabled restyles masks without dropping count", async () => {
+    const img = h.addImage("https://x/large.jpg");
+    h.reply("PROCESS_IMAGE", IMAGE([{ x: 50, y: 50, width: 200, height: 200, confidence: 0.9, identityId: "id1" }]));
+    await h.flush();
+    expect(h.overlayMaskCount()).toBe(1);
+
+    h.fireMessage({
+      target: "content",
+      type: "STATE_CHANGED",
+      enabled: true,
+      earnEnabled: true,
+      revision: 1,
+    });
+    await h.flush();
+    expect(h.overlayMaskCount()).toBe(1);
+
+    h.fireMessage({
+      target: "content",
+      type: "STATE_CHANGED",
+      enabled: true,
+      earnEnabled: false,
+      revision: 1,
+    });
+    await h.flush();
+    expect(h.overlayMaskCount()).toBe(1);
+  });
+});
+

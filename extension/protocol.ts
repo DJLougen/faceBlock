@@ -11,6 +11,8 @@ export interface SavedIdentity {
 export interface BlockList {
   identities: SavedIdentity[];
   enabled: boolean;
+  /** Opt-in generic sponsor masks instead of plain black (default off). */
+  earnEnabled: boolean;
   revision: number;
 }
 export interface ReferencePerson {
@@ -81,7 +83,7 @@ export interface EnrollPreview {
   kept: EnrollPreviewFace[];
   rejected: { url: string; reason: string }[];
 }
-// UI -> background: {target:'background',type:'GET_STATE'|'BLOCK_NAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL'|'REMOVE'|'SET_ENABLED', name?,id?,identityId?,enabled?,faces?}
+// UI -> background: {target:'background',type:'GET_STATE'|'BLOCK_NAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL'|'REMOVE'|'SET_ENABLED'|'SET_EARN_ENABLED', name?,id?,identityId?,enabled?,earnEnabled?,faces?}
 // Content -> background: {target:'background',type:'PROCESS_IMAGE',url:string}
 // Background -> offscreen: {target:'offscreen',type:'ANALYZE'|'ANALYZE_FRAME'|'RESOLVE_PREVIEW'|'CONFIRM_ENROLL',name?,url?,jpegBase64?,identities?:SavedIdentity[],faces?:EnrollPreviewFace[]}
 // Extension page -> offscreen (diagnostics only): {target:'offscreen',type:'ANALYZE'|'ANALYZE_FRAME',url|jpegBase64,identities} — same handlers, but the
@@ -94,7 +96,7 @@ export interface EnrollPreview {
 // An explicit identityId must name an existing saved identity (refresh); without one the confirmed
 //   id is the canonical references.json id for curated names, else a slug of the name.
 // RESOLVE_PREVIEW/CONFIRM_ENROLL are extension-pages-only — EnrollPreviewFace carries raw embeddings.
-// Background -> content: {target:'content',type:'STATE_CHANGED',revision:number,enabled:boolean}.
+// Background -> content: {target:'content',type:'STATE_CHANGED',revision:number,enabled:boolean,earnEnabled:boolean}.
 // Content -> background: {target:'background',type:'ANALYZE_FRAME',jpegBase64:string} — forwarded to the
 // offscreen document as {target:'offscreen',type:'ANALYZE_FRAME',jpegBase64}; response {ok,result:FrameResult}.
 // A second ANALYZE_FRAME while one is in flight gets {ok:false,error:'busy'} immediately — a stale video

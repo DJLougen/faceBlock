@@ -417,6 +417,59 @@ async function collectMasks(cdp: Cdp, sessionId: string): Promise<MaskBox[]> {
   return masks;
 }
 
+/**
+ * When Earn is on, sponsor masks replace black fill. Returns the first visible
+ * sponsor creative URL (from a child background-image) and whether fetch() in
+ * the page context can load it — the web_accessible_resources gate.
+ */
+async function probeSponsorMaskAsset(
+  cdp: Cdp,
+  sessionId: string,
+): Promise<{ found: boolean; url: string | null; fetchOk: boolean; status: number | null }> {
+  const { root } = await cdp.send<{ root: DomNode }>(
+    "DOM.getDocument",
+    { depth: -1, pierce: true },
+    sessionId,
+  );
+  let creativeUrl: string | null = null;
+  const walk = (node: DomNode, inLayer: boolean): void => {
+    if (creativeUrl) return;
+    const attrs = attrsOf(node);
+    const isLayer = "data-fb-layer" in attrs;
+    if (inLayer && attrs["data-fb-mask-style"] === "sponsor" && node.nodeName === "DIV") {
+      for (const c of node.children ?? []) {
+        const cs = attrsOf(c);
+        const bg = cs.style ?? "";
+        const m = bg.match(/background-image:\s*url\(["']?([^"')]+)["']?\)/);
+        if (m) {
+          creativeUrl = m[1]!;
+          return;
+        }
+      }
+    }
+    for (const sr of node.shadowRoots ?? []) walk(sr, inLayer || isLayer);
+    for (const c of node.children ?? []) walk(c, inLayer || isLayer);
+    if (node.contentDocument) walk(node.contentDocument, inLayer || isLayer);
+  };
+  walk(root, false);
+  if (!creativeUrl) return { found: false, url: null, fetchOk: false, status: null };
+
+  const fetched = await evaluate<{ ok: boolean; status: number }>(
+    cdp,
+    sessionId,
+    `(async () => {
+      const res = await fetch(${JSON.stringify(creativeUrl)}, { credentials: "omit" });
+      return { ok: res.ok, status: res.status };
+    })()`,
+  );
+  return {
+    found: true,
+    url: creativeUrl,
+    fetchOk: fetched.ok,
+    status: fetched.status,
+  };
+}
+
 interface Rect {
   left: number;
   top: number;
@@ -707,6 +760,7 @@ interface StoredIdentity {
 interface BlockState {
   identities: StoredIdentity[];
   enabled: boolean;
+  earnEnabled?: boolean;
   revision: number;
 }
 
@@ -779,7 +833,13 @@ async function main(): Promise<void> {
     name?: string;
     version?: string;
     background?: { service_worker?: string };
+    web_accessible_resources?: Array<{ resources?: string[]; matches?: string[] }>;
   };
+  const war = manifest.web_accessible_resources ?? [];
+  assert(
+    war.some((entry) => entry.resources?.includes("sponsors/placeholder.svg")),
+    "manifest.json must expose sponsors/placeholder.svg via web_accessible_resources",
+  );
   for (const rel of [
     manifest.background?.service_worker ?? "background.js",
     "offscreen.html",
@@ -788,6 +848,7 @@ async function main(): Promise<void> {
     "options.js",
     "content.js",
     "references.json",
+    "sponsors/placeholder.svg",
     "models/face_detection_yunet_2026may.onnx",
     "models/w600k_mbf.onnx",
     "samples/theo.jpg",
@@ -1219,6 +1280,65 @@ async function main(): Promise<void> {
       screenshot: shot,
     };
     return `${expectedMaskedImgs.length} images masked, controls clean, stats=${JSON.stringify(stats)}`;
+  });
+
+  await check("earn.sponsor-creative-loads", async () => {
+    try {
+      const enable = await sendBg({ target: "background", type: "SET_EARN_ENABLED", earnEnabled: true });
+      assert(enable.ok === true, `SET_EARN_ENABLED failed: ${JSON.stringify(enable)}`);
+      assert(enable.state?.earnEnabled === true, "earnEnabled not set in stored state");
+
+      const deadline = Date.now() + 60_000;
+      let probe: Awaited<ReturnType<typeof probeSponsorMaskAsset>> | null = null;
+      while (Date.now() < deadline) {
+        probe = await probeSponsorMaskAsset(conn, page.sessionId);
+        if (probe.found && probe.fetchOk) break;
+        await sleep(400);
+      }
+      assert(probe?.found, "no sponsor-styled mask appeared after enabling preview");
+      assert(
+        probe!.fetchOk,
+        `sponsor creative fetch failed (${probe!.status ?? "no status"}) for ${probe!.url ?? "unknown url"}`,
+      );
+      return `sponsor asset loaded (${probe!.status}) ${probe!.url}`;
+    } finally {
+      const disable = await sendBg({
+        target: "background",
+        type: "SET_EARN_ENABLED",
+        earnEnabled: false,
+      });
+      assert(disable.ok === true, `SET_EARN_ENABLED(false) failed: ${JSON.stringify(disable)}`);
+
+      const restoreDeadline = Date.now() + 60_000;
+      while (Date.now() < restoreDeadline) {
+        const sponsor = await probeSponsorMaskAsset(conn, page.sessionId);
+        if (sponsor.found) {
+          await sleep(400);
+          continue;
+        }
+        const masks = await collectMasks(conn, page.sessionId);
+        let blackOk = true;
+        for (const sel of expectedMaskedImgs) {
+          const rect = await elementRect(conn, page.sessionId, sel);
+          if (!rect || !masks.some((m) => intersects(m, rect))) {
+            blackOk = false;
+            break;
+          }
+        }
+        if (blackOk) break;
+        await sleep(400);
+      }
+      const sponsorAfter = await probeSponsorMaskAsset(conn, page.sessionId);
+      assert(!sponsorAfter.found, "sponsor masks still visible after disabling preview");
+      const masksAfter = await collectMasks(conn, page.sessionId);
+      for (const sel of expectedMaskedImgs) {
+        const rect = await elementRect(conn, page.sessionId, sel);
+        assert(
+          rect && masksAfter.some((m) => intersects(m, rect)),
+          `black mask missing over ${sel} after disabling preview`,
+        );
+      }
+    }
   });
 
   /* ---- src mutation: same element re-evaluates to a blocked image ---- */
