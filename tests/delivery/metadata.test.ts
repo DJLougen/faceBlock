@@ -47,6 +47,18 @@ describe("manifest and packaging inputs", () => {
     expect(manifest.manifest_version).toBe(3);
     expect(manifest.version).toBe(pkg.version);
   });
+  test("sponsor placeholder is web-accessible on http(s) pages", async () => {
+    const manifest = await readJson("extension/manifest.json");
+    const war = manifest.web_accessible_resources as Array<Record<string, unknown>>;
+    expect(Array.isArray(war)).toBe(true);
+    const sponsor = war.find((entry) =>
+      (entry.resources as string[] | undefined)?.includes("sponsors/placeholder.svg"),
+    );
+    expect(sponsor).toBeDefined();
+    expect(sponsor!.matches).toEqual(["http://*/*", "https://*/*"]);
+    expect(sponsor!.use_dynamic_url).toBe(true);
+    expect(existsSync("extension/sponsors/placeholder.svg")).toBe(true);
+  });
   test("package.json exposes the verify and packaging gates", async () => {
     const pkg = await readJson("package.json");
     const scripts = pkg.scripts as Record<string, string>;

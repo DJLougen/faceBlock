@@ -31,7 +31,7 @@ function identity(partial: Partial<SavedIdentity> = {}): SavedIdentity {
 }
 
 function stateWith(...identities: SavedIdentity[]): BlockList {
-  return { identities, enabled: true, revision: 0 };
+  return { identities, enabled: true, earnEnabled: false, revision: 0 };
 }
 
 describe("identityId", () => {

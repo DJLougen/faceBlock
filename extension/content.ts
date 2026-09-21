@@ -24,6 +24,11 @@
 
 import { MIN_MEDIA_PX } from "../src/shared/config.ts";
 import { expandMaskOverlay } from "../src/overlay/coordinates.ts";
+import {
+  createMaskShell,
+  SPONSOR_PLACEHOLDER_PATH,
+  styleMaskForEarn,
+} from "../src/overlay/mask.ts";
 import { applyDetections, coastTrack, MAX_TRACK_AGE_MS, type Track } from "../src/tracking/iou.ts";
 import { sampleVideoFrame } from "../src/cv/raster.ts";
 import type { Box, ObjectFit, Size } from "../src/shared/types.ts";
@@ -37,6 +42,7 @@ import type { FrameResult, ImageResult } from "./protocol.ts";
 interface RuntimeShim {
   sendMessage(message: unknown, callback: (response: unknown) => void): void;
   onMessage: { addListener(listener: (message: unknown) => void): void };
+  getURL(path: string): string;
   lastError?: { message?: string };
 }
 
@@ -105,7 +111,10 @@ const WARN_TEXT = "FaceBlock: video not analyzable";
 const VIDEO_FAIL_STREAK = 3;
 /** Marks our overlay host so the MutationObserver skips our own mutations. */
 const LAYER_ATTR = "data-fb-layer";
-const MASK_CSS = "position:absolute;background:#000;pointer-events:none;display:block;";
+
+function sponsorCreativeUrl(): string {
+  return runtime?.getURL(SPONSOR_PLACEHOLDER_PATH) ?? SPONSOR_PLACEHOLDER_PATH;
+}
 const FITS: Record<string, true> = { fill: true, contain: true, cover: true, none: true, "scale-down": true };
 const stats = {
   seen: 0,
@@ -189,6 +198,7 @@ const tracked = new Map<HTMLImageElement, Tracked>();
 const queue: Tracked[] = [];
 let pumping = false;
 let enabled = false;
+let earnEnabled = false;
 let revision = 0;
 
 let overlayHost: HTMLElement | null = null;
@@ -438,8 +448,7 @@ function layoutMasks(t: Tracked): void {
     const region = t.regions[i]!;
     let mask = t.masks[i];
     if (!mask) {
-      mask = document.createElement("div");
-      mask.style.cssText = MASK_CSS;
+      mask = createMaskShell();
       t.masks[i] = mask;
       root.appendChild(mask);
     }
@@ -453,6 +462,7 @@ function layoutMasks(t: Tracked): void {
     mask.style.top = `${rect.top + box.y}px`;
     mask.style.width = `${box.width}px`;
     mask.style.height = `${box.height}px`;
+    styleMaskForEarn(mask, earnEnabled, box, sponsorCreativeUrl());
   }
 }
 
@@ -471,12 +481,19 @@ function realign(): void {
   // prune a paused video's still-valid tracks before visibilitychange rebases.
   if (document.visibilityState !== "visible") return;
   try {
-    for (const t of tracked.values()) {
-      if (t.regions && t.regions.length) layoutMasks(t);
-    }
-    for (const v of vtracked.values()) layoutVideoMasks(v);
+    restyleAllMasks();
   } catch {
     stats.errors++;
+  }
+}
+
+/** Re-layout existing masks when only fill style changes — keeps detections/tracks. */
+function restyleAllMasks(): void {
+  for (const t of tracked.values()) {
+    if (t.regions && t.regions.length) layoutMasks(t);
+  }
+  for (const v of vtracked.values()) {
+    if (v.tracks.length) layoutVideoMasks(v);
   }
 }
 
@@ -854,6 +871,7 @@ function positionVideoMask(v: Vtracked, mask: HTMLElement, frameBox: Box): void 
   mask.style.top = `${rect.top + box.y}px`;
   mask.style.width = `${box.width}px`;
   mask.style.height = `${box.height}px`;
+  styleMaskForEarn(mask, earnEnabled, box, sponsorCreativeUrl());
 }
 
 /**
@@ -944,8 +962,7 @@ function syncVideoMasks(v: Vtracked): void {
   const root = ensureOverlayRoot();
   if (!root) return;
   while (v.masks.length < v.tracks.length) {
-    const mask = document.createElement("div");
-    mask.style.cssText = MASK_CSS;
+    const mask = createMaskShell();
     v.masks.push(mask);
     root.appendChild(mask);
   }
@@ -1434,11 +1451,24 @@ function onMessage(message: unknown): void {
       target?: unknown;
       type?: unknown;
       enabled?: unknown;
+      earnEnabled?: unknown;
       revision?: unknown;
     };
     if (!m || m.target !== "content" || m.type !== "STATE_CHANGED") return;
-    enabled = m.enabled === true;
-    revision = typeof m.revision === "number" ? m.revision : revision + 1;
+    const nextEnabled = m.enabled === true;
+    const nextEarn = m.earnEnabled === true;
+    const nextRevision = typeof m.revision === "number" ? m.revision : revision + 1;
+    const earnOnly =
+      nextEnabled === enabled && nextRevision === revision && nextEarn !== earnEnabled;
+
+    enabled = nextEnabled;
+    earnEnabled = nextEarn;
+    revision = nextRevision;
+
+    if (earnOnly) {
+      restyleAllMasks();
+      return;
+    }
     resetAll();
   } catch {
     stats.errors++;
@@ -1449,9 +1479,10 @@ async function init(): Promise<void> {
   const res = await send({ target: "background", type: "GET_STATE" });
   const state =
     res && res.ok === true
-      ? (res.state as { enabled?: unknown; revision?: unknown } | undefined)
+      ? (res.state as { enabled?: unknown; earnEnabled?: unknown; revision?: unknown } | undefined)
       : undefined;
   enabled = state?.enabled === true;
+  earnEnabled = state?.earnEnabled === true;
   revision = typeof state?.revision === "number" ? state.revision : 0;
   if (enabled) {
     for (const t of tracked.values()) maybeQueue(t);

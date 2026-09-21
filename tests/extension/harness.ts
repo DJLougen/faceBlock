@@ -145,6 +145,7 @@ export class FakeElement extends FakeNode {
   _cs: Record<string, string> | null = null;
   private listeners = new Map<string, Set<(e: unknown) => void>>();
   private attrs = new Map<string, string>();
+  dataset: Record<string, string> = {};
 
   setAttribute(k: string, v: string): void {
     this.attrs.set(k, v);
@@ -176,6 +177,13 @@ export class FakeElement extends FakeNode {
     this._shadow.parentNode = this;
     harness.shadowRoots.push(this._shadow);
     return this._shadow;
+  }
+  replaceChildren(...nodes: FakeNode[]): void {
+    for (const c of [...this.children]) c.remove();
+    for (const n of nodes) this.appendChild(n);
+  }
+  append(...nodes: FakeNode[]): void {
+    for (const n of nodes) this.appendChild(n);
   }
 }
 
@@ -369,6 +377,7 @@ export interface Harness {
   fireWindow(type: string): void;
   overlay(): FakeFragment | null;
   overlayMasks(): FakeElement[];
+  overlayMaskCount(): number;
   overlayBadges(): FakeElement[];
   addImage(src: string): FakeImg;
   addVideo(src: string, opts?: { paused?: boolean }): FakeVideo;
@@ -416,7 +425,7 @@ export function installHarness(): Harness {
           harness.messageListener = fn;
         },
       },
-      lastError: undefined,
+      getURL: (path: string) => `chrome-extension://test/${path}`,
     },
   };
 
@@ -525,6 +534,16 @@ export function installHarness(): Harness {
         (c): c is FakeElement => c instanceof FakeElement && c.textContent === "",
       );
     },
+    overlayMaskCount(): number {
+      const root = shadowRoots[0];
+      if (!root) return 0;
+      return root.children.filter(
+        (c): c is FakeElement =>
+          c instanceof FakeElement &&
+          c.dataset.fbMask === "1" &&
+          c.style.display !== "none",
+      ).length;
+    },
     overlayBadges(): FakeElement[] {
       const root = shadowRoots[0];
       if (!root) return [];
@@ -554,7 +573,7 @@ export function installHarness(): Harness {
     async reset(): Promise<void> {
       // Disable first so nothing re-queues mid-teardown, then resolve every
       // outstanding reply so in-flight counters unwind before the sweep.
-      harness.fireMessage({ target: "content", type: "STATE_CHANGED", enabled: false });
+      harness.fireMessage({ target: "content", type: "STATE_CHANGED", enabled: false, earnEnabled: false, revision: 1 });
       while (sent.length) sent.splice(0, 1)[0]!.cb({ ok: false, error: "reset" });
       await harness.flush();
       // Detach everything, let the sweep untrack it.
@@ -578,7 +597,7 @@ export function installHarness(): Harness {
           }
         }
       }
-      harness.fireMessage({ target: "content", type: "STATE_CHANGED", enabled: true });
+      harness.fireMessage({ target: "content", type: "STATE_CHANGED", enabled: true, earnEnabled: false, revision: 1 });
     },
     uninstall(): void {
       for (const [k, v] of saved) {

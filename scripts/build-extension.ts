@@ -29,6 +29,7 @@ for (const [entry, format] of [["background", "esm"], ["offscreen", "esm"], ["op
 for (const name of ["manifest.json", "references.json", "options.html", "options.css", "offscreen.html"]) {
   await cp(`extension/${name}`, `${out}/${name}`);
 }
+await cp("extension/sponsors", `${out}/sponsors`, { recursive: true });
 // Payload is an explicit allowlist, not a directory copy: only the models the
 // runtime actually loads ship. The retired MediaPipe landmarker stays in
 // demo/public/models/ but is never packaged (see verify-assets NEVER_SHIPPED).

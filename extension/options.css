@@ -308,6 +308,10 @@ button.secondary:hover {
   flex-shrink: 0;
 }
 
+
+.earn { margin-top: 8px; }
+.earn-note { margin: 8px 0 0; max-width: 52em; line-height: 1.55; }
+.earn-note strong { color: var(--fg); font-weight: 600; }
 /* Onboarding copy and footer: added for first-time users, appended so the
    existing dark card styling above is untouched. */
 .steps { margin: 0; padding-left: 20px; line-height: 1.6; }

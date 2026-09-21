@@ -31,6 +31,8 @@ function $(id: string): HTMLElement {
 }
 
 const toggle = $("enabled-toggle") as HTMLInputElement;
+const earnToggle = $("earn-toggle") as HTMLInputElement;
+const earnLabel = $("earn-label");
 const enabledLabel = $("enabled-label");
 const form = $("block-form") as HTMLFormElement;
 const nameInput = $("name-input") as HTMLInputElement;
@@ -41,7 +43,7 @@ const list = $("identity-list");
 const emptyNote = $("empty-note");
 const previewSection = $("preview");
 
-let state: BlockList = { identities: [], enabled: true, revision: 0 };
+let state: BlockList = { identities: [], enabled: true, earnEnabled: false, revision: 0 };
 let enrolling = false;
 // Separate from `enrolling` so a CONFIRM_ENROLL already in flight can never be
 // entered twice, even if a click slips past the disabled buttons.
@@ -91,6 +93,8 @@ function render(): void {
   updateTutorial();
   toggle.checked = state.enabled;
   enabledLabel.textContent = state.enabled ? "Protection on" : "Protection off";
+  earnToggle.checked = state.earnEnabled;
+  earnLabel.textContent = state.earnEnabled ? "Preview on" : "Preview off";
 
   emptyNote.hidden = state.identities.length > 0;
   // The list is rebuilt from scratch, so drop references to the old buttons.
@@ -474,11 +478,35 @@ toggle.addEventListener("change", () => {
     });
 });
 
+earnToggle.addEventListener("change", () => {
+  const earnEnabled = earnToggle.checked;
+  showError(null);
+  void send({ type: "SET_EARN_ENABLED", earnEnabled })
+    .then((response) => {
+      if (response.state) state = response.state;
+      render();
+    })
+    .catch((error: unknown) => {
+      showError(error instanceof Error ? error.message : String(error));
+      render();
+    });
+});
+
+/** True when another tab/popup wrote storage this page should reflect. */
+function storageStateOutOfSync(next: BlockList): boolean {
+  if (!Array.isArray(next.identities)) return false;
+  return (
+    next.revision !== state.revision ||
+    next.enabled !== state.enabled ||
+    next.earnEnabled !== state.earnEnabled
+  );
+}
+
 // Keep multiple open copies of this page in sync with the stored blocklist.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   const next = changes["faceblockState"]?.newValue as BlockList | undefined;
-  if (next && Array.isArray(next.identities) && next.revision !== state.revision) {
+  if (next && storageStateOutOfSync(next)) {
     state = next;
     render();
   }
