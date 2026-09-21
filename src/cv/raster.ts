@@ -126,3 +126,37 @@ export function imageToRasterRegion(
   const { data } = ctx.getImageData(0, 0, rect.width, rect.height);
   return { raster: { width: rect.width, height: rect.height, data }, offsetX: rect.x, offsetY: rect.y };
 }
+
+/** Crop a rectangle from an RGBA raster without touching canvas. */
+export function cropRaster(
+  raster: Raster,
+  rect: { x: number; y: number; width: number; height: number },
+): Raster {
+  const x0 = Math.max(0, Math.floor(rect.x));
+  const y0 = Math.max(0, Math.floor(rect.y));
+  const x1 = Math.min(raster.width, Math.ceil(rect.x + rect.width));
+  const y1 = Math.min(raster.height, Math.ceil(rect.y + rect.height));
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const srcRow = (y0 + y) * raster.width * 4;
+    const dstRow = y * w * 4;
+    data.set(raster.data.subarray(srcRow + x0 * 4, srcRow + x0 * 4 + w * 4), dstRow);
+  }
+  return { width: w, height: h, data };
+}
+
+/** Same contract as imageToRasterRegion, but from a full-frame raster. */
+export function rasterRegion(
+  raster: Raster,
+  box: { x: number; y: number; width: number; height: number },
+  pad = 0.6,
+): { raster: Raster; offsetX: number; offsetY: number } {
+  const rect = regionRect(
+    { naturalWidth: raster.width, naturalHeight: raster.height },
+    box,
+    pad,
+  );
+  return { raster: cropRaster(raster, rect), offsetX: rect.x, offsetY: rect.y };
+}

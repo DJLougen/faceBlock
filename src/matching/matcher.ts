@@ -1,6 +1,11 @@
 /** Gallery matching: query embedding vs blocked identities. */
 
-import { DEFAULT_THRESHOLD, HARD_NEGATIVE_MARGIN, MIN_GALLERY_AGREEMENTS } from "../shared/config.ts";
+import {
+  DEFAULT_THRESHOLD,
+  HARD_NEGATIVE_MARGIN,
+  MIN_GALLERY_AGREEMENTS,
+  SINGLE_GALLERY_APPEARANCE_SLACK,
+} from "../shared/config.ts";
 import type { BlockedIdentity, MatchResult } from "../shared/types.ts";
 import { cosineNormalized, l2Normalize } from "./cosine.ts";
 
@@ -22,6 +27,13 @@ function topKCosines(
     top[i] = s;
   }
   return top;
+}
+
+function effectiveThreshold(base: number, gallerySize: number): number {
+  if (gallerySize === 1 && SINGLE_GALLERY_APPEARANCE_SLACK > 0) {
+    return base - SINGLE_GALLERY_APPEARANCE_SLACK;
+  }
+  return base;
 }
 
 /**
@@ -50,9 +62,10 @@ export function matchFace(
       const neg = topKCosines(q, negs, 1)[0]!;
       if (score - neg < HARD_NEGATIVE_MARGIN) continue;
     }
-    const thresh = Number.isFinite(identity.threshold)
+    const baseThresh = Number.isFinite(identity.threshold)
       ? identity.threshold
       : (opts?.defaultThreshold ?? DEFAULT_THRESHOLD);
+    const thresh = effectiveThreshold(baseThresh, gallery.length);
     if (score >= thresh && top[kNeed - 1]! >= thresh && (best === null || score > best.score)) {
       best = { identityId: identity.id, score };
     }

@@ -20,7 +20,9 @@
  */
 
 import * as ort from "onnxruntime-web/wasm";
-import type { FaceDetection, Point } from "../shared/types.ts";
+import type { FaceDetection, Point, Raster } from "../shared/types.ts";
+import { rasterToRgb, resizeBilinearRgb } from "./preprocess.ts";
+import { cropRaster } from "./raster.ts";
 
 /**
  * Input side used for the first, cheap pass. The 2026may export takes a
@@ -494,3 +496,147 @@ async function detectTiled(
   return found;
 }
 
+
+
+function rgbToBgrChw(rgb: Float32Array, plane: number): Float32Array {
+  const chw = new Float32Array(3 * plane);
+  for (let i = 0; i < plane; i++) {
+    const o = i * 3;
+    chw[i] = rgb[o + 2]!;
+    chw[plane + i] = rgb[o + 1]!;
+    chw[2 * plane + i] = rgb[o]!;
+  }
+  return chw;
+}
+
+async function inferYuNetAtSize(
+  detector: YuNetDetector,
+  chw: Float32Array,
+  inputSize: number,
+  srcW: number,
+  srcH: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
+  sx: number,
+  sy: number,
+  offX: number,
+  offY: number,
+): Promise<FaceDetection[]> {
+  const feeds: Record<string, ort.Tensor> = {
+    [detector.inputName]: new ort.Tensor("float32", chw, [1, 3, inputSize, inputSize]),
+  };
+  const results = await detector.session.run(feeds);
+  const pick = (kind: string, stride: number): Float32Array | undefined => {
+    const name = detector.outputNames[`${kind}_${stride}`];
+    if (!name) return undefined;
+    const t = results[name];
+    return t ? (t.data as Float32Array) : undefined;
+  };
+  const raw = decodeYuNet(
+    {
+      cls: STRIDES.map((s) => pick("cls", s)),
+      obj: STRIDES.map((s) => pick("obj", s)),
+      bbox: STRIDES.map((s) => pick("bbox", s)),
+      kps: STRIDES.map((s) => pick("kps", s)),
+    },
+    detector.priorsBySize.get(inputSize) ?? yunetPriors(inputSize),
+    scoreThreshold,
+  );
+  return nms(raw, nmsThreshold).map((face) => toFaceDetection(face, sx, sy, offX, offY));
+}
+
+async function detectAtSizeRaster(
+  detector: YuNetDetector,
+  raster: Raster,
+  inputSize: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
+): Promise<FaceDetection[]> {
+  const srcW = raster.width;
+  const srcH = raster.height;
+  const rgb = rasterToRgb(raster);
+  const resized = resizeBilinearRgb(rgb, srcW, srcH, inputSize, inputSize);
+  const plane = inputSize * inputSize;
+  const chw = rgbToBgrChw(resized, plane);
+  const sx = srcW / inputSize;
+  const sy = srcH / inputSize;
+  return inferYuNetAtSize(detector, chw, inputSize, srcW, srcH, scoreThreshold, nmsThreshold, sx, sy, 0, 0);
+}
+
+async function detectRegionRaster(
+  detector: YuNetDetector,
+  raster: Raster,
+  originX: number,
+  originY: number,
+  regionW: number,
+  regionH: number,
+  inputSize: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
+): Promise<FaceDetection[]> {
+  const tile = cropRaster(raster, { x: originX, y: originY, width: regionW, height: regionH });
+  const rgb = rasterToRgb(tile);
+  const resized = resizeBilinearRgb(rgb, regionW, regionH, inputSize, inputSize);
+  const plane = inputSize * inputSize;
+  const chw = rgbToBgrChw(resized, plane);
+  const sx = regionW / inputSize;
+  const sy = regionH / inputSize;
+  return inferYuNetAtSize(detector, chw, inputSize, regionW, regionH, scoreThreshold, nmsThreshold, sx, sy, 0, 0);
+}
+
+async function detectTiledRaster(
+  detector: YuNetDetector,
+  raster: Raster,
+  inputSize: number,
+  scoreThreshold: number,
+  nmsThreshold: number,
+): Promise<FaceDetection[]> {
+  const width = raster.width;
+  const height = raster.height;
+  const tileW = Math.ceil(width / TILE_GRID);
+  const tileH = Math.ceil(height / TILE_GRID);
+  const stepX = Math.max(1, Math.round(tileW * (1 - TILE_OVERLAP)));
+  const stepY = Math.max(1, Math.round(tileH * (1 - TILE_OVERLAP)));
+  const found: FaceDetection[] = [];
+  for (let oy = 0; oy < height; oy += stepY) {
+    for (let ox = 0; ox < width; ox += stepX) {
+      const cw = Math.min(tileW, width - ox);
+      const ch = Math.min(tileH, height - oy);
+      if (cw < 64 || ch < 64) continue;
+      const tile = await detectRegionRaster(
+        detector, raster, ox, oy, cw, ch, inputSize, scoreThreshold, nmsThreshold,
+      );
+      for (const face of tile) {
+        const mapped: FaceDetection = {
+          box: { ...face.box, x: face.box.x + ox, y: face.box.y + oy },
+          confidence: face.confidence,
+          landmarks: face.landmarks?.map((p) => ({ x: p.x + ox, y: p.y + oy })),
+        };
+        if (!found.some((f) => overlapIoU(f, mapped) > MERGE_IOU)) found.push(mapped);
+      }
+    }
+  }
+  return found;
+}
+
+/** Node/Bun fixture path: detect from a decoded RGBA raster (no canvas drawImage). */
+export async function detectFacesYuNetRaster(
+  detector: YuNetDetector,
+  raster: Raster,
+  opts: { scoreThreshold?: number; nmsThreshold?: number } = {},
+): Promise<FaceDetection[]> {
+  const scoreThreshold = opts.scoreThreshold ?? 0.5;
+  const nmsThreshold = opts.nmsThreshold ?? 0.3;
+  if (raster.width <= 0 || raster.height <= 0) {
+    throw new Error("faceBlock: detectFacesYuNetRaster received an empty raster");
+  }
+  let faces = await detectAtSizeRaster(detector, raster, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  if (faces.length === 0) {
+    faces = await detectAtSizeRaster(detector, raster, FULL_INPUT_SIZE, scoreThreshold, nmsThreshold);
+  }
+  if (faces.length >= CROWD_FACE_COUNT) {
+    const tiled = await detectTiledRaster(detector, raster, FAST_INPUT_SIZE, scoreThreshold, nmsThreshold);
+    faces = merge(faces, tiled);
+  }
+  return faces;
+}

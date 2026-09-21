@@ -25,3 +25,11 @@ export const MIN_MEDIA_PX = 32;
 
 export const DETECTOR_CONCURRENCY = 1;
 export const EMBED_CONCURRENCY = 4;
+
+/**
+ * When a blocked identity has only one gallery vector, w600k_mbf often scores
+ * same-person appearance drift just under MATCH_THRESHOLD (measured 0.397 on the
+ * local theo.jpg → theo-user-02.jpg fixture). Apply this slack only for
+ * single-vector galleries; multi-vector identities keep the full threshold.
+ */
+export const SINGLE_GALLERY_APPEARANCE_SLACK = 0.025;

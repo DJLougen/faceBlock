@@ -12,7 +12,8 @@
     "verify:browser": "bun scripts/verify-browser.ts",
     "build:extension": "bun scripts/build-extension.ts",
     "package": "bun scripts/package-extension.ts",
-    "check": "bun test tests && bun run typecheck && bun run verify:assets"
+    "check": "bun test tests && bun run typecheck && bun run verify:assets",
+    "diagnose:appearance": "bun scripts/diagnose-appearance.ts"
   },
   "dependencies": {
     "onnxruntime-web": "^1.30.0"
@@ -20,6 +21,8 @@
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "@types/chrome": "^0.3.0",
+    "happy-dom": "^20.14.5",
+    "jpeg-js": "^0.4.4",
     "typescript": "^7.0.2"
   }
 }

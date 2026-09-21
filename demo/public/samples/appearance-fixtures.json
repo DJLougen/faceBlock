@@ -1,0 +1,29 @@
+{
+  "notice": "Local ONNX regression fixtures for appearance change (hair color, facial hair). Records detection, bestCosine, and mask bounds — not geometry unit tests alone. Sample bytes stay user/local eval only; do not redistribute.",
+  "runtime": {
+    "threshold": "extension/enroll.ts MATCH_THRESHOLD",
+    "singleGalleryAppearanceSlack": "src/shared/config.ts SINGLE_GALLERY_APPEARANCE_SLACK (0.025)",
+    "minAgreements": 1,
+    "models": "demo/public/models (same filenames as shipped extension)"
+  },
+  "fixtures": [
+    {
+      "id": "theo-clean-to-user-labeled",
+      "description": "Enroll on theo.jpg (GitHub avatar); query theo-user-02.jpg (user-labeled, different look). Proxy for hair/facial-hair drift when the nightclub photo cannot be committed.",
+      "enroll": ["demo/public/samples/theo.jpg"],
+      "query": "demo/public/samples/theo-user-02.jpg",
+      "identityId": "theo-browne",
+      "measured": {
+        "date": "2026-09-21",
+        "enrollFaceCounts": [1],
+        "queryFaceCount": 1,
+        "primaryConfidence": 0.905,
+        "primaryBestCosine": 0.397,
+        "matchedAtThreshold040": false,
+        "matchedWithSingleGallerySlack": true,
+        "maskCurrentHeight": 469.568,
+        "maskLegacyAnalyzerHeight": 337.333
+      }
+    }
+  ]
+}
