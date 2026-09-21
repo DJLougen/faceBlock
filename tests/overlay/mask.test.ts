@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   MIN_SPONSOR_MASK_EDGE_PX,
   applyMaskStyle,
@@ -8,6 +8,49 @@ import {
   resolveMaskStyle,
   styleMaskForEarn,
 } from "../../src/overlay/mask.ts";
+
+class StubEl {
+  style = new Proxy({} as CSSStyleDeclaration, {
+    get(_target, prop) {
+      if (typeof prop !== "string") return undefined;
+      if (prop === "cssText") {
+        return Object.entries(this.fields).map(([key, value]) => `${key}:${value}`).join(";");
+      }
+      return this.fields[prop] ?? "";
+    },
+    set(_target, prop, value) {
+      if (typeof prop !== "string") return false;
+      if (prop === "cssText") {
+        for (const key of Object.keys(this.fields)) delete this.fields[key];
+        for (const part of String(value).split(";")) {
+          const splitAt = part.indexOf(":");
+          if (splitAt < 0) continue;
+          const raw = part.slice(0, splitAt).trim();
+          const parsed = part.slice(splitAt + 1).trim();
+          if (raw.length === 0) continue;
+          this.fields[raw.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = parsed;
+        }
+        return true;
+      }
+      this.fields[prop] = String(value);
+      return true;
+    },
+    fields: {},
+  } as ProxyHandler<CSSStyleDeclaration> & { fields: Record<string, string> });
+  dataset: Record<string, string | undefined> = {};
+  children: StubEl[] = [];
+  childElementCount = 0;
+  textContent = "";
+  setAttribute(): void {}
+  replaceChildren(...nodes: StubEl[]): void {
+    this.children = nodes;
+    this.childElementCount = nodes.length;
+  }
+  append(...nodes: StubEl[]): void {
+    this.children.push(...nodes);
+    this.childElementCount = this.children.length;
+  }
+}
 
 describe("mask earn gating", () => {
   test("sponsor requires opt-in and minimum edge length", () => {
@@ -27,12 +70,16 @@ describe("mask earn gating", () => {
 });
 
 describe("styleMaskForEarn appearance cache", () => {
-  beforeAll(async () => {
-    if (typeof document !== "undefined") return;
-    const { Window } = await import("happy-dom");
-    const window = new Window();
-    globalThis.document = window.document as unknown as Document;
-    globalThis.HTMLElement = window.HTMLElement as unknown as typeof HTMLElement;
+  const previousDocument = globalThis.document;
+  beforeAll(() => {
+    // Frozen CI has no DOM library. These tests only need createElement, cssText,
+    // dataset, and stable child identity.
+    globalThis.document = {
+      createElement: () => new StubEl(),
+    } as unknown as Document;
+  });
+  afterAll(() => {
+    globalThis.document = previousDocument;
   });
 
   test("createMaskShell applies non-interactive shell styles", () => {
