@@ -93,6 +93,10 @@ function clampBox(box: Box, clamp: Size): Box {
 /**
  * Overlay-only mask padding for hair/beard coverage. Applied at render time
  * in content/renderer — not used by enrollment or embedding crops.
+ *
+ * Troubleshooting: edge pixels outside an existing matched mask → tune
+ * MASK_OVERLAY_PADDING_* here. No mask at all, or diagnostics show detected
+ * but unmatched → enrollment/matching, not these constants.
  */
 export const MASK_OVERLAY_PADDING_X = 0.18;
 export const MASK_OVERLAY_PADDING_TOP = 0.42;
